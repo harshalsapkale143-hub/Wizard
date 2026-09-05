@@ -10,47 +10,42 @@ on:
 jobs:
   backtest:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check required market data
-        id: data
-        shell: bash
-        run: |
-          if [[ ! -f data/NIFTY50.csv ]]; then
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "No data/NIFTY50.csv found. Waiting for historical data." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          shopt -s nullglob
-          files=(data/*.csv)
-          if (( ${#files[@]} < 2 )); then
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "Only the market file is present. Add stock 5-minute CSV files under data/." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          echo "ready=true" >> "$GITHUB_OUTPUT"
-          echo "Historical data detected: ${#files[@]} CSV files." >> "$GITHUB_STEP_SUMMARY"
-
       - name: Setup Python
-        if: steps.data.outputs.ready == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
-        if: steps.data.outputs.ready == 'true'
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy
+          pip install pandas numpy requests pyotp
+
+      - name: Download NSE 5-minute data from Angel One
+        env:
+          ANGEL_API_KEY: ${{ secrets.ANGEL_API_KEY }}
+          ANGEL_CLIENT_CODE: ${{ secrets.ANGEL_CLIENT_CODE }}
+          ANGEL_PIN: ${{ secrets.ANGEL_PIN }}
+          ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET }}
+          ANGEL_CLIENT_LOCAL_IP: ${{ secrets.ANGEL_CLIENT_LOCAL_IP }}
+          ANGEL_CLIENT_PUBLIC_IP: ${{ secrets.ANGEL_CLIENT_PUBLIC_IP }}
+          ANGEL_MAC_ADDRESS: ${{ secrets.ANGEL_MAC_ADDRESS }}
+        run: python angelone_download.py
+
+      - name: Validate historical data
+        shell: bash
+        run: |
+          test -f data/NIFTY50.csv || { echo 'NIFTY50.csv missing'; exit 1; }
+          shopt -s nullglob
+          files=(data/*.csv)
+          (( ${#files[@]} >= 2 )) || { echo 'Fewer than 2 data CSV files found'; exit 1; }
+          echo "Found ${#files[@]} data files."
 
       - name: Run SEPA backtest
-        if: steps.data.outputs.ready == 'true'
-        shell: bash
         run: |
           EXTRA=""
           [[ -f fundamentals_point_in_time.csv ]] && EXTRA="$EXTRA --fundamentals fundamentals_point_in_time.csv"
@@ -62,7 +57,6 @@ jobs:
             --output results $EXTRA
 
       - name: Upload backtest results
-        if: steps.data.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: sepa-backtest-results
