@@ -1,0 +1,43 @@
+name: SEPA Backtest
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+  schedule:
+    - cron: '30 3 * * *'
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy openchart
+
+      - name: Download NSE 5-minute data
+        run: python download_nse_5m_openchart.py
+
+      - name: Run SEPA backtest
+        run: |
+          python minervini_sepa_nse_algo_v3.py \
+            --data-dir data \
+            --market NIFTY50 \
+            --output results
+
+      - name: Upload backtest results
+        uses: actions/upload-artifact@v4
+        with:
+          name: sepa-backtest-results
+          path: results/
+          if-no-files-found: error
