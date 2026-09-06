@@ -33,16 +33,15 @@ def signals(d,market,near,tighten,vol_mult):
 def run(files,market,start,end,near=.85,tighten=.65,vol_mult=1.5):
     md=market.loc[:end]; market_ok=(md.close>md.close.rolling(200).mean()).shift(1).fillna(False)
     cache={p.stem:load(p) for p in files}; sigs=[]
-    for p,d in cache.items():
+    for sym,d in cache.items():
         for dt,e,stop in signals(d,market,near,tighten,vol_mult):
-            if start<=dt<=end and bool(market_ok.reindex([dt]).fillna(False).iloc[0]): sigs.append((dt,p.stem,e,stop))
+            if start<=dt<=end and bool(market_ok.reindex([dt]).fillna(False).iloc[0]): sigs.append((dt,sym,e,stop))
     sigs.sort(); cash=INITIAL; pos={}; trades=[]; curve=[]
     for dt in market.index[(market.index>=start)&(market.index<=end)]:
         for sym in list(pos):
             d=cache[sym]; px=float(d.loc[dt,'close']) if dt in d.index else np.nan
             if not np.isfinite(px): continue
             ma50=float(d.close.rolling(50).mean().loc[dt]); stop=pos[sym]['stop']
-            # Protect gains: trail stop upward with the 20-day low after a 2R move.
             r=pos[sym]['risk']; peak=float(d.close.loc[:dt].max()); trail=float(d.low.loc[:dt].tail(20).min())
             effective_stop=max(stop, trail) if peak>=pos[sym]['entry']+2*r else stop
             if px<=effective_stop or (np.isfinite(ma50) and px<ma50):
