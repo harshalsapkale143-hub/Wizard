@@ -1,110 +1,66 @@
-"""Download official NSE daily CM UDiFF bhavcopy files and build NIFTY50.csv.
+"""Build daily NSE/NIFTY-50 OHLCV data without broker credentials.
 
-This script intentionally uses NSE's public archives and does not require a
-broker/API key. It downloads only the NIFTY 50 constituent files listed in
-config/nifty50_symbols.csv plus the NIFTY index series. Run in GitHub Actions.
-
-NSE archive layouts can change. The script tries the current UDiFF zip URL
-pattern first and fails clearly if NSE changes the archive naming/layout.
+Uses Yahoo Finance's public market-data endpoint through yfinance. This is a
+free data source for research/backtesting; it is not an official NSE feed.
+The workflow uses a retryable batch download and writes the exact CSV schema
+required by daily_sepa_backtest.py.
 """
 from __future__ import annotations
-import io, zipfile
 from pathlib import Path
-from datetime import date, timedelta
-import requests
+import time
 import pandas as pd
+import yfinance as yf
 
-START = date(2024, 1, 1)
-END = date(2026, 3, 31)
+START = "2024-01-01"
+END = "2026-04-01"
 OUT = Path("data")
-RAW = Path(".cache/nse")
-BASE = "https://nsearchives.nseindia.com/content/cm"
-HEADERS = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36","Accept":"*/*","Referer":"https://www.nseindia.com/"}
 
 
-def daterange(a,b):
-    d=a
-    while d<=b:
-        yield d
-        d += timedelta(days=1)
+def symbols():
+    return [x.strip().upper() for x in Path("config/nifty50_symbols.csv").read_text().splitlines()[1:] if x.strip()]
 
 
-def get(url):
-    r=requests.get(url,headers=HEADERS,timeout=60)
-    if r.status_code != 200 or len(r.content)<100:
-        return None
-    return r.content
-
-
-def find_csv(blob):
-    try:
-        z=zipfile.ZipFile(io.BytesIO(blob))
-        names=[n for n in z.namelist() if n.lower().endswith('.csv')]
-        if not names: return None
-        return z.read(names[0])
-    except zipfile.BadZipFile:
-        return None
-
-
-def download_day(d):
-    # Current CM UDiFF common bhavcopy naming convention.
-    candidates=[
-        f"BhavCopy_NSE_CM_0_0_0_{d.strftime('%Y%m%d')}_F_0000.csv.zip",
-        f"BhavCopy_NSE_CM_0_0_0_{d.strftime('%Y%m%d')}_F_0000.csv",
-    ]
-    for name in candidates:
-        blob=get(f"{BASE}/{name}")
-        if blob:
-            raw=find_csv(blob)
-            if raw is not None:
-                return pd.read_csv(io.BytesIO(raw))
-    return None
+def download(ticker: str) -> pd.DataFrame:
+    for attempt in range(5):
+        try:
+            d = yf.download(ticker, start=START, end=END, interval="1d", auto_adjust=False, progress=False, threads=False)
+            if d is not None and not d.empty:
+                if isinstance(d.columns, pd.MultiIndex):
+                    d.columns = d.columns.get_level_values(0)
+                d = d.rename(columns={"Date":"timestamp"}).reset_index()
+                if "timestamp" not in d.columns:
+                    d = d.rename(columns={d.columns[0]:"timestamp"})
+                d["timestamp"] = pd.to_datetime(d["timestamp"], errors="coerce").dt.tz_localize(None)
+                d = d.rename(columns={"Open":"open","High":"high","Low":"low","Close":"close","Volume":"volume"})
+                cols=["timestamp","open","high","low","close","volume"]
+                if set(cols).issubset(d.columns):
+                    return d[cols].dropna(subset=["timestamp","open","high","low","close"]).sort_values("timestamp")
+        except Exception as e:
+            print(f"{ticker}: attempt {attempt+1}/5 failed: {e}")
+        time.sleep(3 * (attempt + 1))
+    return pd.DataFrame()
 
 
 def main():
-    OUT.mkdir(exist_ok=True); RAW.mkdir(parents=True,exist_ok=True)
-    symbols=pd.read_csv("config/nifty50_symbols.csv")["symbol"].str.upper().tolist()
-    all_rows=[]
-    for d in daterange(START,END):
-        if d.weekday()>=5: continue
-        cache=RAW/f"{d:%Y%m%d}.parquet"
-        try:
-            df=pd.read_parquet(cache)
-        except Exception:
-            df=download_day(d)
-            if df is None:
-                continue
-            try: df.to_parquet(cache,index=False)
-            except Exception: pass
-        # UDiFF columns are typically TckrSymb, TradDt, OpnPric, HghPric,
-        # LwPric, ClsPric, TtlTradgVol. Normalize by aliases.
-        aliases={
-            "symbol":["TckrSymb","SYMBOL","Symbol"],
-            "date":["TradDt","TIMESTAMP","Date","DATE"],
-            "open":["OpnPric","OPEN","Open"],
-            "high":["HghPric","HIGH","High"],
-            "low":["LwPric","LOW","Low"],
-            "close":["ClsPric","CLOSE","Close"],
-            "volume":["TtlTradgVol","TOTTRDQTY","Volume","volume"],
-        }
-        rename={}
-        for target,names in aliases.items():
-            for n in names:
-                if n in df.columns: rename[n]=target; break
-        x=df.rename(columns=rename)
-        needed={"symbol","date","open","high","low","close","volume"}
-        if not needed.issubset(x.columns): continue
-        x["symbol"]=x.symbol.astype(str).str.upper()
-        x=x[x.symbol.isin(symbols)]
-        x["timestamp"]=pd.to_datetime(x.date,errors="coerce")
-        for c in ["open","high","low","close","volume"]: x[c]=pd.to_numeric(x[c],errors="coerce")
-        x=x.dropna(subset=["timestamp","open","high","low","close"])
-        all_rows.append(x[["timestamp","symbol","open","high","low","close","volume"]])
-    if not all_rows: raise RuntimeError("No NSE bhavcopy data downloaded; archive layout may have changed.")
-    stocks=pd.concat(all_rows,ignore_index=True).drop_duplicates(["timestamp","symbol"])
-    for sym,g in stocks.groupby("symbol"):
-        g=g.drop(columns="symbol").sort_values("timestamp")
-        g.to_csv(OUT/f"{sym}.csv",index=False)
-    print(f"Wrote {stocks.symbol.nunique()} stocks and {len(stocks):,} rows")
+    OUT.mkdir(exist_ok=True)
+    syms = symbols()
+    # NIFTY index is the market-regime series used by the backtest.
+    jobs = [("^NSEI", "NIFTY50")] + [(s + ".NS", s) for s in syms]
+    good = 0
+    for ticker, name in jobs:
+        print(f"Downloading {ticker}")
+        d = download(ticker)
+        if d.empty:
+            print(f"NO DATA: {ticker}")
+            continue
+        d.to_csv(OUT / f"{name}.csv", index=False)
+        print(f"saved {len(d):,} rows -> data/{name}.csv")
+        good += 1
+        time.sleep(0.5)
+    if good < 2 or not (OUT / "NIFTY50.csv").exists():
+        raise RuntimeError("Insufficient market data downloaded. No backtest should run.")
+    print(f"Completed {good}/{len(jobs)} downloads")
 
-if __name__=="__main__": main()
+
+if __name__ == "__main__":
+    main()
