@@ -23,24 +23,32 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy requests
+          pip install pandas numpy yfinance
 
-      - name: Download and build NIFTY 50 daily data from NSE
+      - name: Download and build daily data
         run: python scripts/build_nifty50_daily.py
 
-      - name: Check daily market data
+      - name: Validate daily market data
         id: data
         shell: bash
         run: |
-          test -f data/NIFTY50.csv || { echo 'NIFTY50 index file is missing.' >> "$GITHUB_STEP_SUMMARY"; exit 1; }
-          shopt -s nullglob
-          files=(data/*.csv)
-          if (( ${#files[@]} < 2 )); then
-            echo 'NSE download produced fewer than two CSV files.' >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-          echo "Found ${#files[@]} CSV files." >> "$GITHUB_STEP_SUMMARY"
+          test -s data/NIFTY50.csv || { echo 'NIFTY50 index data is missing.' >> "$GITHUB_STEP_SUMMARY"; exit 1; }
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          required={'timestamp','open','high','low','close','volume'}
+          files=list(Path('data').glob('*.csv'))
+          valid=[]
+          for f in files:
+              d=pd.read_csv(f)
+              if required.issubset(d.columns) and len(d)>=250:
+                  valid.append((f.name,len(d)))
+          print('Valid datasets:', valid)
+          if len(valid)<11:
+              raise SystemExit(f'Need at least 11 datasets, found {len(valid)}')
+          PY
           echo 'ready=true' >> "$GITHUB_OUTPUT"
+          echo "Validated market and stock datasets." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run daily SEPA/VCP backtest
         if: steps.data.outputs.ready == 'true'
