@@ -49,20 +49,22 @@ jobs:
       - name: Run robustness and out-of-sample analysis
         if: steps.data.outputs.ready == 'true'
         run: python robustness_backtest.py
+      - name: Build point-in-time metadata
+        if: steps.data.outputs.ready == 'true'
+        env:
+          METADATA_SOURCE_DIR: metadata_sources
+          LISTING_SOURCE_FILE: metadata_sources/listing_dates.csv
+        run: |
+          python scripts/build_historical_metadata.py
       - name: Run young/small-cap experiment
         if: steps.data.outputs.ready == 'true'
-        run: |
-          echo 'Checking for point-in-time metadata...'
-          if [ ! -f metadata/stock_metadata.csv ]; then
-            echo 'Young/small-cap experiment not run: metadata/stock_metadata.csv is not present.' >> "$GITHUB_STEP_SUMMARY"
-            echo 'Historical IPO/listing dates and point-in-time market caps are required; refusing look-ahead-biased substitution.' >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          python young_small_cap_experiment.py
-      - name: Upload results
+        run: python young_small_cap_experiment.py
+      - name: Upload results and metadata
         if: steps.data.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: daily-sepa-backtest-results
-          path: results/
+          path: |
+            results/
+            metadata/
           if-no-files-found: error
