@@ -68,9 +68,9 @@ def run(files,market,start,end,near=.85,tighten=.65,vol_mult=1.5):
     return {'start':str(start.date()),'end':str(end.date()),'near_high':near,'tighten':tighten,'vol_mult':vol_mult,'final_capital':final,'return_pct':(final/INITIAL-1)*100,'cagr_pct':cagr*100,'max_drawdown_pct':dd*100,'trades':len(tr),'win_rate_pct':len(wins)/len(tr)*100 if len(tr) else 0,'profit_factor':pf,'sharpe':sharpe},tr,eq
 
 def main():
-    root=Path('data'); market=load(root/'NIFTY50.csv'); files=[p for p in root.glob('*.csv') if p.name!='NIFTY50.csv']; rows=[]
-    configs=list(itertools.product([.80,.85,.90],[.55,.65,.75],[1.25,1.50,1.75]))
-    windows=[(pd.Timestamp('2019-01-01'),pd.Timestamp('2022-12-31')),(pd.Timestamp('2023-01-01'),pd.Timestamp('2024-12-31')),(pd.Timestamp('2025-01-01'),pd.Timestamp('2026-03-31'))]
+    root=Path('data'); market=load(root/'NIFTY50.csv'); files=list(root.glob('*.csv')); files=[p for p in files if p.name!='NIFTY50.csv']
+    if not files: raise RuntimeError('No stock CSV files found')
+    rows=[]; configs=list(itertools.product([.80,.85,.90],[.55,.65,.75],[1.25,1.50,1.75])); windows=[(pd.Timestamp('2019-01-01'),pd.Timestamp('2022-12-31')),(pd.Timestamp('2023-01-01'),pd.Timestamp('2024-12-31')),(pd.Timestamp('2025-01-01'),pd.Timestamp('2026-03-31'))]
     for near,tighten,vm in configs:
         for start,end in windows: rows.append(run(files,market,start,end,near,tighten,vm)[0])
     out=Path('results'); out.mkdir(exist_ok=True); df=pd.DataFrame(rows); df.to_csv(out/'robustness_grid.csv',index=False)
