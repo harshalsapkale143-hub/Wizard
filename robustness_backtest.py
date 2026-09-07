@@ -6,12 +6,11 @@ import pandas as pd
 
 INITIAL=1_000_000.0; COST_BPS=10.0; RISK_PCT=0.005
 
-# The robustness grid previously re-read every stock CSV for every parameter
-# combination and every window. With ~700 symbols that creates tens of
-# thousands of redundant CSV reads. Keep the parsed daily frames in memory
-# once for the whole process and reuse them across all runs.
+# Cache parsed daily data and invariant technical features once per process.
 DATA_CACHE={}
+FEATURE_CACHE={}
 MARKET_CACHE=None
+MARKET_OK_CACHE={}
 
 
 def load(p):
@@ -24,49 +23,84 @@ def get_cache(files, market_path):
     global MARKET_CACHE
     if MARKET_CACHE is None:
         MARKET_CACHE=load(market_path)
-    missing=[p for p in files if p.stem not in DATA_CACHE]
-    for p in missing:
-        DATA_CACHE[p.stem]=load(p)
+    for p in files:
+        if p.stem not in DATA_CACHE:
+            DATA_CACHE[p.stem]=load(p)
     return DATA_CACHE, MARKET_CACHE
 
 
-def signals(d,market,near,tighten,vol_mult):
+def build_features(sym,d,market):
+    """Build all calculations that do not depend on robustness parameters once."""
+    if sym in FEATURE_CACHE:
+        return FEATURE_CACHE[sym]
     c,h,l,v=d.close,d.high,d.low,d.volume
     ma50=c.rolling(50).mean(); ma150=c.rolling(150).mean(); ma200=c.rolling(200).mean()
-    trend=(c>ma150)&(c>ma200)&(ma150>ma200)&(c>ma50)
-    high60=h.rolling(60).max(); near_high=c>=high60*near
-    r10=(h.rolling(10).max()-l.rolling(10).min())/c; r30=(h.rolling(30).max()-l.rolling(30).min())/c
-    setup=trend&near_high&(r10<r30*tighten)&(v<v.rolling(20).mean()*0.75)
-    pivot=h.rolling(20).max().shift(1); vol20=v.rolling(20).mean().shift(1)
-    rs=c/market.close.reindex(d.index).ffill(); rsma=rs.rolling(50).mean()
+    high60=h.rolling(60).max()
+    r10=(h.rolling(10).max()-l.rolling(10).min())/c
+    r30=(h.rolling(30).max()-l.rolling(30).min())/c
+    vol20=v.rolling(20).mean()
+    pivot=h.rolling(20).max().shift(1)
+    vol20_prev=vol20.shift(1)
+    rs=c/market.close.reindex(d.index).ffill()
+    rsma=rs.rolling(50).mean()
+    atr14=(h-l).rolling(14).mean()
+    low10=l.rolling(10).min()
+    # Exit series are also invariant across robustness configurations.
+    peak=c.cummax()
+    trail20=l.rolling(20).min()
+    f={
+        'trend':(c>ma150)&(c>ma200)&(ma150>ma200)&(c>ma50),
+        'near_base':c/high60,
+        'r10':r10,
+        'r30':r30,
+        'dry_volume_ratio':v/vol20,
+        'pivot':pivot,
+        'vol20_prev':vol20_prev,
+        'rs':rs,
+        'rsma':rsma,
+        'atr14':atr14,
+        'low10':low10,
+        'ma50':ma50,
+        'peak':peak,
+        'trail20':trail20,
+    }
+    FEATURE_CACHE[sym]=f
+    return f
+
+
+def signals(sym,d,market,near,tighten,vol_mult):
+    f=build_features(sym,d,market)
+    setup=f['trend']&(f['near_base']>=near)&(f['r10']<f['r30']*tighten)&(f['dry_volume_ratio']<0.75)
     out=[]
     for i in range(1,len(d)-1):
+        # Preserve the original prior-day setup / current-day breakout timing.
         if not setup.iloc[i-1]: continue
-        if d.close.iloc[i]<=pivot.iloc[i] or d.volume.iloc[i]<vol20.iloc[i]*vol_mult or rs.iloc[i]<=rsma.iloc[i]: continue
+        if d.close.iloc[i]<=f['pivot'].iloc[i] or d.volume.iloc[i]<f['vol20_prev'].iloc[i]*vol_mult or f['rs'].iloc[i]<=f['rsma'].iloc[i]: continue
         dt=d.index[i]; nd=d.index[i+1]; entry=float(d.open.iloc[i+1])
-        atr=(d.high-d.low).rolling(14).mean().iloc[i-1]
-        stop=min(float(d.low.iloc[max(0,i-10):i].min()),float(d.close.iloc[i]-1.5*atr))
+        atr=f['atr14'].iloc[i-1]
+        stop=min(float(f['low10'].iloc[i-1]),float(d.close.iloc[i]-1.5*atr))
         if np.isfinite(stop) and stop<entry: out.append((nd,entry,stop))
     return out
 
 
 def run(files,market,start,end,near=.85,tighten=.65,vol_mult=1.5):
-    # files are already parsed in the shared cache; this is the major runtime
-    # optimization while preserving exactly the same strategy logic.
     cache,_=get_cache(files,None) if market is None else (DATA_CACHE, market)
-    md=market.loc[:end]; market_ok=(md.close>md.close.rolling(200).mean()).shift(1).fillna(False)
+    key=(str(start),str(end))
+    if key not in MARKET_OK_CACHE:
+        md=market.loc[:end]
+        MARKET_OK_CACHE[key]=(md.close>md.close.rolling(200).mean()).shift(1).fillna(False)
+    market_ok=MARKET_OK_CACHE[key]
     sigs=[]
     for sym,d in cache.items():
-        for dt,e,stop in signals(d,market,near,tighten,vol_mult):
+        for dt,e,stop in signals(sym,d,market,near,tighten,vol_mult):
             if start<=dt<=end and bool(market_ok.reindex([dt]).fillna(False).iloc[0]): sigs.append((dt,sym,e,stop))
     sigs.sort(); cash=INITIAL; pos={}; trades=[]; curve=[]
     for dt in market.index[(market.index>=start)&(market.index<=end)]:
         for sym in list(pos):
             d=cache[sym]; px=float(d.loc[dt,'close']) if dt in d.index else np.nan
             if not np.isfinite(px): continue
-            ma50=float(d.close.rolling(50).mean().loc[dt]); stop=pos[sym]['stop']
-            r=pos[sym]['risk']; peak=float(d.close.loc[:dt].max()); trail=float(d.low.loc[:dt].tail(20).min())
-            effective_stop=max(stop,trail) if peak>=pos[sym]['entry']+2*r else stop
+            f=FEATURE_CACHE[sym]; ma50=float(f['ma50'].loc[dt]); stop=pos[sym]['stop']; peak=float(f['peak'].loc[dt]); trail=float(f['trail20'].loc[dt])
+            r=pos[sym]['risk']; effective_stop=max(stop,trail) if peak>=pos[sym]['entry']+2*r else stop
             if px<=effective_stop or (np.isfinite(ma50) and px<ma50):
                 proceeds=pos[sym]['qty']*px; fee=(pos[sym]['qty']*pos[sym]['entry']+proceeds)*COST_BPS/10000
                 pnl=proceeds-pos[sym]['cost']-fee; cash+=proceeds-fee
