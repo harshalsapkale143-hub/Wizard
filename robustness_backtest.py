@@ -6,9 +6,9 @@ import pandas as pd
 
 INITIAL=1_000_000.0; COST_BPS=10.0; RISK_PCT=0.005
 
-# Cache parsed daily data and invariant technical features once per process.
 DATA_CACHE={}
 FEATURE_CACHE={}
+SIGNAL_CACHE={}
 MARKET_CACHE=None
 MARKET_OK_CACHE={}
 
@@ -30,56 +30,36 @@ def get_cache(files, market_path):
 
 
 def build_features(sym,d,market):
-    """Build all calculations that do not depend on robustness parameters once."""
     if sym in FEATURE_CACHE:
         return FEATURE_CACHE[sym]
     c,h,l,v=d.close,d.high,d.low,d.volume
     ma50=c.rolling(50).mean(); ma150=c.rolling(150).mean(); ma200=c.rolling(200).mean()
-    high60=h.rolling(60).max()
-    r10=(h.rolling(10).max()-l.rolling(10).min())/c
-    r30=(h.rolling(30).max()-l.rolling(30).min())/c
-    vol20=v.rolling(20).mean()
-    pivot=h.rolling(20).max().shift(1)
-    vol20_prev=vol20.shift(1)
-    rs=c/market.close.reindex(d.index).ffill()
-    rsma=rs.rolling(50).mean()
-    atr14=(h-l).rolling(14).mean()
-    low10=l.rolling(10).min()
-    # Exit series are also invariant across robustness configurations.
-    peak=c.cummax()
-    trail20=l.rolling(20).min()
-    f={
-        'trend':(c>ma150)&(c>ma200)&(ma150>ma200)&(c>ma50),
-        'near_base':c/high60,
-        'r10':r10,
-        'r30':r30,
-        'dry_volume_ratio':v/vol20,
-        'pivot':pivot,
-        'vol20_prev':vol20_prev,
-        'rs':rs,
-        'rsma':rsma,
-        'atr14':atr14,
-        'low10':low10,
-        'ma50':ma50,
-        'peak':peak,
-        'trail20':trail20,
-    }
+    high60=h.rolling(60).max(); r10=(h.rolling(10).max()-l.rolling(10).min())/c; r30=(h.rolling(30).max()-l.rolling(30).min())/c
+    vol20=v.rolling(20).mean(); pivot=h.rolling(20).max().shift(1); vol20_prev=vol20.shift(1)
+    rs=c/market.close.reindex(d.index).ffill(); rsma=rs.rolling(50).mean(); atr14=(h-l).rolling(14).mean(); low10=l.rolling(10).min()
+    peak=c.cummax(); trail20=l.rolling(20).min()
+    f={'trend':(c>ma150)&(c>ma200)&(ma150>ma200)&(c>ma50),'near_base':c/high60,'r10':r10,'r30':r30,'dry_volume_ratio':v/vol20,'pivot':pivot,'vol20_prev':vol20_prev,'rs':rs,'rsma':rsma,'atr14':atr14,'low10':low10,'ma50':ma50,'peak':peak,'trail20':trail20}
     FEATURE_CACHE[sym]=f
     return f
 
 
 def signals(sym,d,market,near,tighten,vol_mult):
+    key=(sym,float(near),float(tighten),float(vol_mult))
+    if key in SIGNAL_CACHE:
+        return SIGNAL_CACHE[key]
     f=build_features(sym,d,market)
     setup=f['trend']&(f['near_base']>=near)&(f['r10']<f['r30']*tighten)&(f['dry_volume_ratio']<0.75)
-    out=[]
-    for i in range(1,len(d)-1):
-        # Preserve the original prior-day setup / current-day breakout timing.
-        if not setup.iloc[i-1]: continue
-        if d.close.iloc[i]<=f['pivot'].iloc[i] or d.volume.iloc[i]<f['vol20_prev'].iloc[i]*vol_mult or f['rs'].iloc[i]<=f['rsma'].iloc[i]: continue
-        dt=d.index[i]; nd=d.index[i+1]; entry=float(d.open.iloc[i+1])
-        atr=f['atr14'].iloc[i-1]
-        stop=min(float(f['low10'].iloc[i-1]),float(d.close.iloc[i]-1.5*atr))
-        if np.isfinite(stop) and stop<entry: out.append((nd,entry,stop))
+    breakout=(setup.shift(1,fill_value=False)&(d.close>f['pivot'])&(d.volume>=f['vol20_prev']*vol_mult)&(f['rs']>f['rsma']))
+    entry_mask=breakout.shift(1,fill_value=False)
+    idx=np.flatnonzero(entry_mask.to_numpy())
+    if len(idx):
+        entries=d.open.iloc[idx].to_numpy(dtype=float); bi=idx-1
+        atr=f['atr14'].iloc[bi].to_numpy(dtype=float); lows=f['low10'].iloc[bi].to_numpy(dtype=float); closes=d.close.iloc[bi].to_numpy(dtype=float)
+        stops=np.minimum(lows,closes-1.5*atr); dates=d.index[idx]
+        valid=np.isfinite(entries)&np.isfinite(stops)&(stops<entries)
+        out=[(dt,float(e),float(s)) for dt,e,s,ok in zip(dates,entries,stops,valid) if ok]
+    else: out=[]
+    SIGNAL_CACHE[key]=out
     return out
 
 
@@ -87,8 +67,7 @@ def run(files,market,start,end,near=.85,tighten=.65,vol_mult=1.5):
     cache,_=get_cache(files,None) if market is None else (DATA_CACHE, market)
     key=(str(start),str(end))
     if key not in MARKET_OK_CACHE:
-        md=market.loc[:end]
-        MARKET_OK_CACHE[key]=(md.close>md.close.rolling(200).mean()).shift(1).fillna(False)
+        md=market.loc[:end]; MARKET_OK_CACHE[key]=(md.close>md.close.rolling(200).mean()).shift(1).fillna(False)
     market_ok=MARKET_OK_CACHE[key]
     sigs=[]
     for sym,d in cache.items():
@@ -102,13 +81,11 @@ def run(files,market,start,end,near=.85,tighten=.65,vol_mult=1.5):
             f=FEATURE_CACHE[sym]; ma50=float(f['ma50'].loc[dt]); stop=pos[sym]['stop']; peak=float(f['peak'].loc[dt]); trail=float(f['trail20'].loc[dt])
             r=pos[sym]['risk']; effective_stop=max(stop,trail) if peak>=pos[sym]['entry']+2*r else stop
             if px<=effective_stop or (np.isfinite(ma50) and px<ma50):
-                proceeds=pos[sym]['qty']*px; fee=(pos[sym]['qty']*pos[sym]['entry']+proceeds)*COST_BPS/10000
-                pnl=proceeds-pos[sym]['cost']-fee; cash+=proceeds-fee
+                proceeds=pos[sym]['qty']*px; fee=(pos[sym]['qty']*pos[sym]['entry']+proceeds)*COST_BPS/10000; pnl=proceeds-pos[sym]['cost']-fee; cash+=proceeds-fee
                 trades.append((pos[sym]['date'],dt,sym,pos[sym]['entry'],px,pos[sym]['qty'],pnl)); del pos[sym]
         for sdt,sym,e,stop in sigs:
             if sdt!=dt or sym in pos or len(pos)>=10: continue
-            risk=e-stop
-            equity=cash+sum(x['qty']*float(cache[k].loc[dt,'close']) for k,x in pos.items() if dt in cache[k].index)
+            risk=e-stop; equity=cash+sum(x['qty']*float(cache[k].loc[dt,'close']) for k,x in pos.items() if dt in cache[k].index)
             qty=min(int(equity*RISK_PCT/risk),int(cash/(e*(1+COST_BPS/10000)))) if risk>0 else 0
             if qty<=0: continue
             fee=qty*e*COST_BPS/10000; cost=qty*e+fee
@@ -128,10 +105,12 @@ def run(files,market,start,end,near=.85,tighten=.65,vol_mult=1.5):
 def main():
     global MARKET_CACHE
     root=Path('data'); market_path=root/'NIFTY50.csv'; MARKET_CACHE=load(market_path)
-    files=list(root.glob('*.csv')); files=[p for p in files if p.name!='NIFTY50.csv']
+    files=[p for p in root.glob('*.csv') if p.name!='NIFTY50.csv']
     if not files: raise RuntimeError('No stock CSV files found')
     cache,_=get_cache(files,market_path)
     rows=[]; configs=list(itertools.product([.80,.85,.90],[.55,.65,.75],[1.25,1.50,1.75])); windows=[(pd.Timestamp('2019-01-01'),pd.Timestamp('2022-12-31')),(pd.Timestamp('2023-01-01'),pd.Timestamp('2024-12-31')),(pd.Timestamp('2025-01-01'),pd.Timestamp('2026-03-31'))]
+    for near,tighten,vm in configs:
+        for sym,d in cache.items(): signals(sym,d,MARKET_CACHE,near,tighten,vm)
     for near,tighten,vm in configs:
         for start,end in windows: rows.append(run(files,MARKET_CACHE,start,end,near,tighten,vm)[0])
     out=Path('results'); out.mkdir(exist_ok=True); df=pd.DataFrame(rows); df.to_csv(out/'robustness_grid.csv',index=False)
