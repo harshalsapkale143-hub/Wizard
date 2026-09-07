@@ -34,11 +34,19 @@ def build_features(sym,d,market):
         return FEATURE_CACHE[sym]
     c,h,l,v=d.close,d.high,d.low,d.volume
     ma50=c.rolling(50).mean(); ma150=c.rolling(150).mean(); ma200=c.rolling(200).mean()
-    high60=h.rolling(60).max(); r10=(h.rolling(10).max()-l.rolling(10).min())/c; r30=(h.rolling(30).max()-l.rolling(30).min())/c
+    high60=h.rolling(60).max()
+    r5=(h.rolling(5).max()-l.rolling(5).min())/c
+    r10=(h.rolling(10).max()-l.rolling(10).min())/c
+    r20=(h.rolling(20).max()-l.rolling(20).min())/c
+    r30=(h.rolling(30).max()-l.rolling(30).min())/c
+    r40=(h.rolling(40).max()-l.rolling(40).min())/c
     vol20=v.rolling(20).mean(); pivot=h.rolling(20).max().shift(1); vol20_prev=vol20.shift(1)
     rs=c/market.close.reindex(d.index).ffill(); rsma=rs.rolling(50).mean(); atr14=(h-l).rolling(14).mean(); low10=l.rolling(10).min()
     peak=c.cummax(); trail20=l.rolling(20).min()
-    f={'trend':(c>ma150)&(c>ma200)&(ma150>ma200)&(c>ma50),'near_base':c/high60,'r10':r10,'r30':r30,'dry_volume_ratio':v/vol20,'pivot':pivot,'vol20_prev':vol20_prev,'rs':rs,'rsma':rsma,'atr14':atr14,'low10':low10,'ma50':ma50,'peak':peak,'trail20':trail20}
+    f={'trend':(c>ma150)&(c>ma200)&(ma150>ma200)&(c>ma50),'near_base':c/high60,
+       'r5':r5,'r10':r10,'r20':r20,'r30':r30,'r40':r40,'dry_volume_ratio':v/vol20,
+       'pivot':pivot,'vol20_prev':vol20_prev,'rs':rs,'rsma':rsma,'atr14':atr14,
+       'low10':low10,'ma50':ma50,'peak':peak,'trail20':trail20}
     FEATURE_CACHE[sym]=f
     return f
 
@@ -48,7 +56,15 @@ def signals(sym,d,market,near,tighten,vol_mult):
     if key in SIGNAL_CACHE:
         return SIGNAL_CACHE[key]
     f=build_features(sym,d,market)
-    setup=f['trend']&(f['near_base']>=near)&(f['r10']<f['r30']*tighten)&(f['dry_volume_ratio']<0.75)
+    # Multi-contraction VCP quality gate: the short-term range must contract
+    # versus the intermediate range, and the intermediate range must itself
+    # contract versus the broader base. This is deliberately parameter-free;
+    # the existing 27-point robustness grid remains the only parameter sweep.
+    contraction=(f['r10'] < f['r20']*tighten) & (f['r20'] < f['r40']*0.90)
+    # Keep the pivot area tight: avoid buying a breakout after an already-large
+    # extension from the recent 20-day base.
+    pivot_distance=(d.close/f['pivot']-1.0).clip(lower=-np.inf)
+    setup=(f['trend']&(f['near_base']>=near)&contraction&(f['dry_volume_ratio']<0.75)&(pivot_distance<=0.03))
     breakout=(setup.shift(1,fill_value=False)&(d.close>f['pivot'])&(d.volume>=f['vol20_prev']*vol_mult)&(f['rs']>f['rsma']))
     entry_mask=breakout.shift(1,fill_value=False)
     idx=np.flatnonzero(entry_mask.to_numpy())
