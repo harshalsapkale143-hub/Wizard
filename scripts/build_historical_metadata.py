@@ -2,9 +2,10 @@ from __future__ import annotations
 
 """Build point-in-time NSE listing and market-cap metadata.
 
-Accepts CSV/XLS/XLSX/ZIP/GZ market-cap archives.  Dates are read from the
-source table when available, otherwise from the archive filename.  No current
-market-cap substitution is permitted.
+Accepts CSV/XLS/XLSX/ZIP/GZ market-cap archives. Dates are read from an
+explicit date column, then from column headers (NSE files commonly encode the
+snapshot date in the market-cap header), then from the source filename. No
+current-market-cap substitution is permitted.
 """
 from pathlib import Path
 import json, os, re, zipfile, gzip, tempfile
@@ -31,18 +32,17 @@ def read_csv(p):
     raise ValueError(f'Unable to read {p}')
 
 def read_table(p):
-    s=p.suffix.lower()
-    if s in ('.xls','.xlsx'):
+    if p.suffix.lower() in ('.xls','.xlsx'):
         return pd.read_excel(p)
     return read_csv(p)
 
 def find_col(df, aliases):
     cols={canon(c):c for c in df.columns}
-    for alias in aliases:
-        a=canon(alias)
-        if a in cols: return cols[a]
+    normalized_aliases=[canon(x) for x in aliases]
+    for alias in normalized_aliases:
+        if alias in cols: return cols[alias]
     for c0,c in cols.items():
-        if any(a in c0 for a in [canon(x) for x in aliases]): return c
+        if any(a in c0 for a in normalized_aliases): return c
     return None
 
 def date_from_text(text):
@@ -51,18 +51,34 @@ def date_from_text(text):
     if m: return pd.to_datetime(m.group(0),errors='coerce')
     m=re.search(rf'(\d{{1,2}})\s+({MONTHS})\s+(\d{{4}})',t,re.I)
     if m: return pd.to_datetime(m.group(0),errors='coerce',dayfirst=True)
-    m=re.search(r'(20\d{2})[-_](\d{1,2})[-_](\d{1,2})',t)
+    m=re.search(r'(20\d{2})[-_/](\d{1,2})[-_/](\d{1,2})',t)
     if m: return pd.Timestamp(int(m.group(1)),int(m.group(2)),int(m.group(3)))
+    m=re.search(r'(\d{1,2})[-_/](\d{1,2})[-_/](20\d{2})',t)
+    if m:
+        return pd.to_datetime(f'{m.group(1)}-{m.group(2)}-{m.group(3)}',dayfirst=True,errors='coerce')
     return pd.NaT
+
+def infer_snapshot_date(df, path):
+    # NSE historical market-cap workbooks frequently put the snapshot date in
+    # the market-cap column name rather than in a dedicated date column.
+    for col in df.columns:
+        dt=date_from_text(col)
+        if pd.notna(dt): return dt, f'column:{col}'
+    dt=date_from_text(path.name)
+    if pd.notna(dt): return dt, f'filename:{path.name}'
+    return pd.NaT, 'unresolved'
 
 def build_listing():
     if not LISTING.exists(): raise FileNotFoundError(f'Missing {LISTING}')
-    d=read_csv(LISTING); sc=find_col(d,['symbol','ticker','security_symbol']); dc=find_col(d,['listing_date','listingdate','date_of_listing'])
+    d=read_csv(LISTING)
+    sc=find_col(d,['symbol','ticker','security_symbol'])
+    dc=find_col(d,['listing_date','listingdate','date_of_listing'])
     if not sc or not dc: raise ValueError('Listing source needs symbol and listing_date columns')
     out=pd.DataFrame({'symbol':d[sc].map(norm_symbol),'listing_date':pd.to_datetime(d[dc],errors='coerce')}).dropna()
     out=out[out.symbol!=''].drop_duplicates('symbol')
     if out.listing_date.dt.year.lt(1900).any(): raise ValueError('Invalid listing dates detected')
-    out.to_csv(OUT/'listing_dates.csv',index=False); return out
+    out.to_csv(OUT/'listing_dates.csv',index=False)
+    return out
 
 def iter_source_files():
     for p in sorted(SRC.iterdir()):
@@ -73,12 +89,12 @@ def iter_source_files():
 def tables_from_archive(p):
     suffix=p.suffix.lower()
     if suffix in {'.csv','.xls','.xlsx'}:
-        yield p, read_table(p)
-        return
+        yield p, read_table(p); return
     with tempfile.TemporaryDirectory() as td:
         td=Path(td)
         if suffix=='.gz':
-            q=td/(p.stem or 'source.csv'); q.write_bytes(gzip.open(p,'rb').read())
+            q=td/(p.stem or 'source.csv')
+            with gzip.open(p,'rb') as src: q.write_bytes(src.read())
             yield q, read_table(q)
         elif suffix=='.zip':
             with zipfile.ZipFile(p) as z:
@@ -93,25 +109,31 @@ def build_caps():
     for p in iter_source_files():
         try:
             for inner,d in tables_from_archive(p):
-                sc=find_col(d,['symbol','ticker','security_symbol','nse_symbol']); dc=find_col(d,['date','as_of_date','market_cap_date','as_on_date','date_as_on'])
+                sc=find_col(d,['symbol','ticker','security_symbol','nse_symbol'])
+                dc=find_col(d,['date','as_of_date','market_cap_date','as_on_date','date_as_on'])
                 mc=find_col(d,['market_cap_cr','market_cap','market_capitalization','market_capitalisation','market_cap_rs_cr','market_cap_rs_crore'])
-                snapshot=date_from_text(p.name)
+                snapshot, snapshot_source=infer_snapshot_date(d, inner if inner.exists() else p)
                 if not (sc and mc):
-                    diagnostics.append((p.name,'missing_symbol_or_market_cap',list(map(str,d.columns)))); continue
-                dates=pd.to_datetime(d[dc],errors='coerce') if dc else pd.Series(snapshot,index=d.index)
-                if dates.isna().all() and pd.notna(snapshot): dates=pd.Series(snapshot,index=d.index)
+                    diagnostics.append((p.name,'missing_symbol_or_market_cap',snapshot_source,list(map(str,d.columns)))); continue
+                if dc:
+                    dates=pd.to_datetime(d[dc],errors='coerce')
+                    if dates.isna().all() and pd.notna(snapshot): dates=pd.Series(snapshot,index=d.index)
+                    date_source=f'column:{dc}' if not dates.isna().all() else snapshot_source
+                else:
+                    dates=pd.Series(snapshot,index=d.index)
+                    date_source=snapshot_source
                 x=pd.DataFrame({'symbol':d[sc].map(norm_symbol),'date':dates,'market_cap_cr':pd.to_numeric(d[mc],errors='coerce')})
                 x=x.dropna(); x=x[(x.symbol!='')&(x.market_cap_cr>0)]
                 if not x.empty: frames.append(x)
-                diagnostics.append((p.name,f'accepted:{len(x)}',list(map(str,d.columns))))
+                diagnostics.append((p.name,f'accepted:{len(x)}',date_source,list(map(str,d.columns))))
         except Exception as e:
-            diagnostics.append((p.name,f'error:{e}',[]))
+            diagnostics.append((p.name,f'error:{e}', 'error', []))
     if not frames:
         raise FileNotFoundError(f'No usable historical market-cap tables found in {SRC}. Diagnostics={diagnostics}')
     out=pd.concat(frames,ignore_index=True).drop_duplicates(['symbol','date'],keep='last').sort_values(['date','market_cap_cr'],ascending=[True,False])
     if out.date.max()>pd.Timestamp.today()+pd.Timedelta(days=31): raise ValueError('Market-cap data contains implausible future dates')
     out.to_csv(OUT/'historical_market_caps.csv',index=False)
-    pd.DataFrame(diagnostics,columns=['source','status','columns']).to_csv(OUT/'market_cap_parse_diagnostics.csv',index=False)
+    pd.DataFrame(diagnostics,columns=['source','status','date_source','columns']).to_csv(OUT/'market_cap_parse_diagnostics.csv',index=False)
     return out
 
 def main():
@@ -119,16 +141,16 @@ def main():
     quality=[]; universe=set()
     for y in range(2019,2027):
         cutoff=pd.Timestamp(f'{y}-12-31')
-        c=caps[caps.date<=cutoff].sort_values(['date','market_cap_cr']).groupby('symbol').tail(1).sort_values('market_cap_cr',ascending=False)
-        covered=len(set(c.symbol)&set(symbols)); quality.append({'asof':str(cutoff.date()),'symbols_with_listing_and_cap':covered,'cap_coverage_pct':round(100*covered/max(1,len(symbols)),2)})
+        c=caps[(caps.date<=cutoff)&caps.symbol.isin(symbols)].sort_values(['date','market_cap_cr']).groupby('symbol').tail(1).sort_values('market_cap_cr',ascending=False)
+        covered=len(c.symbol.unique())
+        quality.append({'asof':str(cutoff.date()),'symbols_with_listing_and_cap':covered,'cap_coverage_pct':round(100*covered/max(1,len(symbols)),2)})
         universe.update(c.head(500).symbol.tolist())
     pd.DataFrame(quality).to_csv(OUT/'metadata_quality.csv',index=False)
     pd.DataFrame({'symbol':sorted(universe)}).to_csv(OUT/'universe_symbols.csv',index=False)
-    # Point-in-time snapshot metadata used by the experiment.  We retain every
-    # historical observation rather than collapsing it to today's value.
     caps['rank']=caps.groupby('date')['market_cap_cr'].rank(method='first',ascending=False)
     caps.to_csv(OUT/'historical_market_caps.csv',index=False)
     manifest={'source_dir':str(SRC),'listing_source':str(LISTING),'listing_rows':len(listing),'market_cap_rows':len(caps),'common_symbols':len(symbols),'universe_symbols':len(universe),'market_cap_min_date':str(caps.date.min().date()),'market_cap_max_date':str(caps.date.max().date()),'size_policy':'NSE snapshot top-500 universe; small/mid research bucket is ranks 101-500; point-in-time snapshot at/before test date','policy':'No current-data substitution; point-in-time snapshots only'}
     (OUT/'source_manifest.json').write_text(json.dumps(manifest,indent=2))
     print(json.dumps(manifest,indent=2)); print(pd.DataFrame(quality).to_string(index=False))
+
 if __name__=='__main__': main()
