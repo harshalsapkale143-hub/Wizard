@@ -29,8 +29,6 @@ jobs:
           METADATA_SOURCE_DIR: metadata_sources
           LISTING_SOURCE_FILE: metadata_sources/listing_dates.csv
         run: python scripts/build_historical_metadata.py
-      - name: Build historical fundamentals
-        run: python scripts/build_historical_fundamentals.py
       - name: Restore historical market-data cache
         uses: actions/cache/restore@v4
         with:
@@ -89,5 +87,4 @@ jobs:
             results/
             metadata/
             metadata_sources/
-            fundamentals/
           if-no-files-found: error
