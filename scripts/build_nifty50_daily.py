@@ -5,10 +5,9 @@ the union of historical top-500 NSE symbols. The script downloads that
 research universe; it falls back to the current NIFTY-50 list only when the
 metadata universe is unavailable.
 
-When a prior data/*.csv exists (for example from the GitHub Actions cache),
-only a short overlap window after the last stored observation is downloaded.
-The overlap is merged back into the full history, preserving the research
-history while avoiding a full 2018-to-present redownload on every run.
+Cached files are reused. A symbol is downloaded again only when its stored
+history is stale; this is important for GitHub Actions, where the data/
+directory is restored from the Actions cache before this script runs.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -19,7 +18,11 @@ import yfinance as yf
 START = "2018-01-01"
 END = "2026-09-08"
 OUT = Path("data")
-REFRESH_DAYS = 10
+# A daily NSE series is considered current if its last observation is within
+# this many calendar days of today. This naturally covers weekends/holidays
+# without forcing a network request for every cached symbol.
+STALE_AFTER_DAYS = 3
+REFRESH_OVERLAP_DAYS = 5
 
 
 def symbols():
@@ -51,30 +54,37 @@ def download(ticker: str, start: str = START) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def refresh(ticker: str, name: str) -> bool:
+def refresh(ticker: str, name: str) -> tuple[bool, bool]:
+    """Return (success, network_refresh_performed)."""
     path=OUT/f'{name}.csv'
     if path.exists():
         try:
             old=pd.read_csv(path)
             old['timestamp']=pd.to_datetime(old['timestamp'],errors='coerce').dt.tz_localize(None)
             old=old.dropna(subset=['timestamp']).sort_values('timestamp')
-            if len(old)>=250 and old['timestamp'].max() >= pd.Timestamp(END)-pd.Timedelta(days=REFRESH_DAYS):
-                # Still refresh a small overlap so recent corrections are captured.
-                start=(old['timestamp'].max()-pd.Timedelta(days=REFRESH_DAYS)).strftime('%Y-%m-%d')
+            today=pd.Timestamp.now().normalize()
+            if len(old)>=250:
+                age_days=(today-old['timestamp'].max().normalize()).days
+                if age_days <= STALE_AFTER_DAYS:
+                    # Cached history is current enough. Do not hit Yahoo at all.
+                    return True, False
+                # Stale cache: request only a short overlap and merge it into
+                # the existing history, rather than redownloading from 2018.
+                start=(old['timestamp'].max()-pd.Timedelta(days=REFRESH_OVERLAP_DAYS)).strftime('%Y-%m-%d')
                 fresh=download(ticker,start)
                 if not fresh.empty:
                     merged=pd.concat([old[~old.timestamp.isin(fresh.timestamp)],fresh],ignore_index=True)
                     merged=merged.drop_duplicates('timestamp',keep='last').sort_values('timestamp')
                     merged.to_csv(path,index=False)
-                    return True
-                return True
+                    return True, True
+                return True, True
             # Old/incomplete cache: rebuild the full history.
         except Exception as e:
             print(f'{name}: cached file unusable, rebuilding: {e}')
     d=download(ticker)
-    if d.empty: return False
+    if d.empty: return False, True
     d.to_csv(path,index=False)
-    return True
+    return True, True
 
 
 def main():
@@ -82,17 +92,23 @@ def main():
     syms=symbols()
     jobs=[('^NSEI','NIFTY50')]+[(s+'.NS',s) for s in syms]
     good=0
+    refreshed=0
+    cached=0
     for i,(ticker,name) in enumerate(jobs,1):
-        print(f'[{i}/{len(jobs)}] Refreshing {ticker}')
-        if refresh(ticker,name):
+        print(f'[{i}/{len(jobs)}] Checking {ticker}')
+        ok, did_refresh=refresh(ticker,name)
+        if ok:
             rows=len(pd.read_csv(OUT/f'{name}.csv'))
             good+=1
-            print(f'saved {rows:,} rows -> data/{name}.csv')
+            if did_refresh: refreshed+=1
+            else: cached+=1
+            state='refreshed' if did_refresh else 'cache-hit'
+            print(f'{state}: {rows:,} rows -> data/{name}.csv')
         else:
             print(f'NO DATA: {ticker}')
-        time.sleep(0.2)
+        time.sleep(0.05 if not did_refresh else 0.2)
     if good<11 or not (OUT/'NIFTY50.csv').exists(): raise RuntimeError(f'Insufficient market data downloaded: {good} datasets')
-    print(f'Completed {good}/{len(jobs)} refreshes from historical research universe')
+    print(f'Completed {good}/{len(jobs)} datasets: {cached} cache hits, {refreshed} network refreshes')
 
 
 if __name__=='__main__': main()
