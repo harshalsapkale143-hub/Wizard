@@ -29,8 +29,21 @@ jobs:
           METADATA_SOURCE_DIR: metadata_sources
           LISTING_SOURCE_FILE: metadata_sources/listing_dates.csv
         run: python scripts/build_historical_metadata.py
+      - name: Restore historical market-data cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: sepa-research-data-${{ hashFiles('metadata/universe_symbols.csv') }}-${{ github.run_number }}
+          restore-keys: |
+            sepa-research-data-${{ hashFiles('metadata/universe_symbols.csv') }}-
       - name: Download and build historical research universe
         run: python scripts/build_nifty50_daily.py
+      - name: Save refreshed historical market-data cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data
+          key: sepa-research-data-${{ hashFiles('metadata/universe_symbols.csv') }}-${{ github.run_number }}
       - name: Validate daily market data
         id: data
         shell: bash
