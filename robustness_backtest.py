@@ -6,10 +6,29 @@ import pandas as pd
 
 INITIAL=1_000_000.0; COST_BPS=10.0; RISK_PCT=0.005
 
+# The robustness grid previously re-read every stock CSV for every parameter
+# combination and every window. With ~700 symbols that creates tens of
+# thousands of redundant CSV reads. Keep the parsed daily frames in memory
+# once for the whole process and reuse them across all runs.
+DATA_CACHE={}
+MARKET_CACHE=None
+
+
 def load(p):
     d=pd.read_csv(p); d.timestamp=pd.to_datetime(d.timestamp); d=d.sort_values('timestamp').set_index('timestamp')
     for c in ['open','high','low','close','volume']: d[c]=pd.to_numeric(d[c],errors='coerce')
     return d.dropna(subset=['open','high','low','close','volume'])
+
+
+def get_cache(files, market_path):
+    global MARKET_CACHE
+    if MARKET_CACHE is None:
+        MARKET_CACHE=load(market_path)
+    missing=[p for p in files if p.stem not in DATA_CACHE]
+    for p in missing:
+        DATA_CACHE[p.stem]=load(p)
+    return DATA_CACHE, MARKET_CACHE
+
 
 def signals(d,market,near,tighten,vol_mult):
     c,h,l,v=d.close,d.high,d.low,d.volume
@@ -30,9 +49,13 @@ def signals(d,market,near,tighten,vol_mult):
         if np.isfinite(stop) and stop<entry: out.append((nd,entry,stop))
     return out
 
+
 def run(files,market,start,end,near=.85,tighten=.65,vol_mult=1.5):
+    # files are already parsed in the shared cache; this is the major runtime
+    # optimization while preserving exactly the same strategy logic.
+    cache,_=get_cache(files,None) if market is None else (DATA_CACHE, market)
     md=market.loc[:end]; market_ok=(md.close>md.close.rolling(200).mean()).shift(1).fillna(False)
-    cache={p.stem:load(p) for p in files}; sigs=[]
+    sigs=[]
     for sym,d in cache.items():
         for dt,e,stop in signals(d,market,near,tighten,vol_mult):
             if start<=dt<=end and bool(market_ok.reindex([dt]).fillna(False).iloc[0]): sigs.append((dt,sym,e,stop))
@@ -43,7 +66,7 @@ def run(files,market,start,end,near=.85,tighten=.65,vol_mult=1.5):
             if not np.isfinite(px): continue
             ma50=float(d.close.rolling(50).mean().loc[dt]); stop=pos[sym]['stop']
             r=pos[sym]['risk']; peak=float(d.close.loc[:dt].max()); trail=float(d.low.loc[:dt].tail(20).min())
-            effective_stop=max(stop, trail) if peak>=pos[sym]['entry']+2*r else stop
+            effective_stop=max(stop,trail) if peak>=pos[sym]['entry']+2*r else stop
             if px<=effective_stop or (np.isfinite(ma50) and px<ma50):
                 proceeds=pos[sym]['qty']*px; fee=(pos[sym]['qty']*pos[sym]['entry']+proceeds)*COST_BPS/10000
                 pnl=proceeds-pos[sym]['cost']-fee; cash+=proceeds-fee
@@ -67,15 +90,19 @@ def run(files,market,start,end,near=.85,tighten=.65,vol_mult=1.5):
     wins=tr.loc[tr.pnl>0,'pnl']; losses=tr.loc[tr.pnl<0,'pnl']; pf=float(wins.sum()/abs(losses.sum())) if len(losses) else np.inf
     return {'start':str(start.date()),'end':str(end.date()),'near_high':near,'tighten':tighten,'vol_mult':vol_mult,'final_capital':final,'return_pct':(final/INITIAL-1)*100,'cagr_pct':cagr*100,'max_drawdown_pct':dd*100,'trades':len(tr),'win_rate_pct':len(wins)/len(tr)*100 if len(tr) else 0,'profit_factor':pf,'sharpe':sharpe},tr,eq
 
+
 def main():
-    root=Path('data'); market=load(root/'NIFTY50.csv'); files=list(root.glob('*.csv')); files=[p for p in files if p.name!='NIFTY50.csv']
+    global MARKET_CACHE
+    root=Path('data'); market_path=root/'NIFTY50.csv'; MARKET_CACHE=load(market_path)
+    files=list(root.glob('*.csv')); files=[p for p in files if p.name!='NIFTY50.csv']
     if not files: raise RuntimeError('No stock CSV files found')
+    cache,_=get_cache(files,market_path)
     rows=[]; configs=list(itertools.product([.80,.85,.90],[.55,.65,.75],[1.25,1.50,1.75])); windows=[(pd.Timestamp('2019-01-01'),pd.Timestamp('2022-12-31')),(pd.Timestamp('2023-01-01'),pd.Timestamp('2024-12-31')),(pd.Timestamp('2025-01-01'),pd.Timestamp('2026-03-31'))]
     for near,tighten,vm in configs:
-        for start,end in windows: rows.append(run(files,market,start,end,near,tighten,vm)[0])
+        for start,end in windows: rows.append(run(files,MARKET_CACHE,start,end,near,tighten,vm)[0])
     out=Path('results'); out.mkdir(exist_ok=True); df=pd.DataFrame(rows); df.to_csv(out/'robustness_grid.csv',index=False)
-    base,tr,eq=run(files,market,pd.Timestamp('2025-04-01'),pd.Timestamp('2026-03-31')); pd.DataFrame([base]).to_csv(out/'robustness_baseline.csv',index=False); tr.to_csv(out/'robustness_trades.csv',index=False); eq.rename('equity').to_csv(out/'equity_curve.csv')
-    b=market.loc['2025-04-01':'2026-03-31','close']; bench=(b.iloc[-1]/b.iloc[0]-1)*100 if len(b)>1 else 0
+    base,tr,eq=run(files,MARKET_CACHE,pd.Timestamp('2025-04-01'),pd.Timestamp('2026-03-31')); pd.DataFrame([base]).to_csv(out/'robustness_baseline.csv',index=False); tr.to_csv(out/'robustness_trades.csv',index=False); eq.rename('equity').to_csv(out/'equity_curve.csv')
+    b=MARKET_CACHE.loc['2025-04-01':'2026-03-31','close']; bench=(b.iloc[-1]/b.iloc[0]-1)*100 if len(b)>1 else 0
     pd.DataFrame([{'strategy_return_pct':base['return_pct'],'nifty_buy_hold_return_pct':bench,'strategy_minus_benchmark_pct':base['return_pct']-bench}]).to_csv(out/'benchmark.csv',index=False)
     print(df.groupby(['start','end']).agg(return_mean=('return_pct','mean'),return_median=('return_pct','median'),trades_mean=('trades','mean'),pf_median=('profit_factor','median')).to_string()); print('BASELINE',base,'BENCHMARK',bench)
 if __name__=='__main__': main()
