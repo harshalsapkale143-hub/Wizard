@@ -11,6 +11,7 @@ FEATURE_CACHE={}
 SIGNAL_CACHE={}
 MARKET_CACHE=None
 MARKET_OK_CACHE={}
+RS_RANK_CACHE=None
 
 
 def load(p):
@@ -51,11 +52,29 @@ def build_features(sym,d,market):
     return f
 
 
+def build_rs_rank(files, market):
+    global RS_RANK_CACHE
+    if RS_RANK_CACHE is not None:
+        return RS_RANK_CACHE
+    # Cross-sectional relative-strength rank, computed once for the whole
+    # universe. Each day's percentile is point-in-time and uses only that
+    # day's already-computed stock-vs-NIFTY RS values.
+    rs_cols={}
+    for p in files:
+        sym=p.stem
+        d=DATA_CACHE[sym]
+        rs_cols[sym]=build_features(sym,d,market)['rs']
+    rs_df=pd.DataFrame(rs_cols)
+    RS_RANK_CACHE=rs_df.rank(axis=1,pct=True,method='average')
+    return RS_RANK_CACHE
+
+
 def signals(sym,d,market,near,tighten,vol_mult):
     key=(sym,float(near),float(tighten),float(vol_mult))
     if key in SIGNAL_CACHE:
         return SIGNAL_CACHE[key]
     f=build_features(sym,d,market)
+    rs_rank=RS_RANK_CACHE[sym].reindex(d.index) if RS_RANK_CACHE is not None else pd.Series(index=d.index,dtype=float)
     # Multi-contraction VCP quality gate: the short-term range must contract
     # versus the intermediate range, and the intermediate range must itself
     # contract versus the broader base. This is deliberately parameter-free;
@@ -65,7 +84,11 @@ def signals(sym,d,market,near,tighten,vol_mult):
     # extension from the recent 20-day base.
     pivot_distance=(d.close/f['pivot']-1.0).clip(lower=-np.inf)
     setup=(f['trend']&(f['near_base']>=near)&contraction&(f['dry_volume_ratio']<0.75)&(pivot_distance<=0.03))
-    breakout=(setup.shift(1,fill_value=False)&(d.close>f['pivot'])&(d.volume>=f['vol20_prev']*vol_mult)&(f['rs']>f['rsma']))
+    day_range=(d.high-d.low).replace(0,np.nan)
+    close_location=(d.close-d.low)/day_range
+    # Breakout quality: demand a strong close in the day's range and require
+    # the stock to be in the stronger portion of the universe by RS percentile.
+    breakout=(setup.shift(1,fill_value=False)&(d.close>f['pivot'])&(d.volume>=f['vol20_prev']*vol_mult)&(f['rs']>f['rsma'])&(close_location>=0.70)&(rs_rank>=0.70))
     entry_mask=breakout.shift(1,fill_value=False)
     idx=np.flatnonzero(entry_mask.to_numpy())
     if len(idx):
@@ -124,6 +147,7 @@ def main():
     files=[p for p in root.glob('*.csv') if p.name!='NIFTY50.csv']
     if not files: raise RuntimeError('No stock CSV files found')
     cache,_=get_cache(files,market_path)
+    build_rs_rank(files,MARKET_CACHE)
     rows=[]; configs=list(itertools.product([.80,.85,.90],[.55,.65,.75],[1.25,1.50,1.75])); windows=[(pd.Timestamp('2019-01-01'),pd.Timestamp('2022-12-31')),(pd.Timestamp('2023-01-01'),pd.Timestamp('2024-12-31')),(pd.Timestamp('2025-01-01'),pd.Timestamp('2026-03-31'))]
     for near,tighten,vm in configs:
         for sym,d in cache.items(): signals(sym,d,MARKET_CACHE,near,tighten,vm)
