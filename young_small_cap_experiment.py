@@ -26,6 +26,21 @@ WINDOWS=[
 GROUPS=['control','young','small_mid','young_small_mid']
 INITIAL=1_000_000.0
 
+# The experiment runs the same engine repeatedly for different frozen cohorts.
+# Cache CSV parsing so each symbol is read from disk only once per process.
+_ENGINE_LOAD = engine.load
+_ENGINE_DATA_CACHE = {}
+
+
+def cached_engine_load(path):
+    key=str(Path(path).resolve())
+    if key not in _ENGINE_DATA_CACHE:
+        _ENGINE_DATA_CACHE[key]=_ENGINE_LOAD(path)
+    return _ENGINE_DATA_CACHE[key]
+
+
+engine.load=cached_engine_load
+
 
 def load_metadata():
     listing=pd.read_csv('metadata/listing_dates.csv')
