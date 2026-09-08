@@ -8,51 +8,59 @@ INITIAL=1_000_000.0; COST_BPS=10.0; RISK_PCT=0.005; MAX_POSITIONS=10
 CONFIGS=[(.80,.65,1.5),(.85,.65,1.5),(.90,.65,1.5),(.85,.65,1.75)]
 WINDOWS=[('2019-01-01','2022-12-31'),('2023-01-01','2024-12-31'),('2025-01-01','2026-03-31'),('2021-04-01','2026-03-31')]
 
-# Exit variants are deliberately simple and pre-specified. They alter exits only;
-# entry logic, universe, sizing, costs and signal parameters remain unchanged.
+# Pre-specified exit research. Entries, universe, sizing, costs and signal parameters
+# are unchanged. Variants are intentionally simple and tested across multiple eras.
 VARIANTS={
- 'baseline_stop_50dma': {'trigger_r':999,'trail':'none'},
- 'trail20_after_1r': {'trigger_r':1.0,'trail':'20d'},
- 'trail20_after_1_5r': {'trigger_r':1.5,'trail':'20d'},
- 'trail20_after_2r': {'trigger_r':2.0,'trail':'20d'},
- 'trail10_after_1r': {'trigger_r':1.0,'trail':'10d'},
- 'trail10_after_1_5r': {'trigger_r':1.5,'trail':'10d'},
- 'trail10_after_2r': {'trigger_r':2.0,'trail':'10d'},
+ 'baseline_stop_50dma': {'mode':'baseline'},
+ 'breakeven_after_1r': {'mode':'breakeven','trigger_r':1.0},
+ 'breakeven_after_1_5r': {'mode':'breakeven','trigger_r':1.5},
+ 'trail20_after_1r': {'mode':'trail20','trigger_r':1.0},
+ 'trail20_after_2r': {'mode':'trail20','trigger_r':2.0},
+ 'trail10_after_1r': {'mode':'trail10','trigger_r':1.0},
+ 'atr3_after_1r': {'mode':'atr','trigger_r':1.0,'atr_mult':3.0},
+ 'atr2_after_1r': {'mode':'atr','trigger_r':1.0,'atr_mult':2.0},
+ 'atr3_after_2r': {'mode':'atr','trigger_r':2.0,'atr_mult':3.0},
+ 'trail20_plus_breakeven': {'mode':'trail20_be','trigger_r':1.0},
+ 'time60_if_below_05r': {'mode':'time','days':60,'min_r':0.5},
 }
 
 def run_variant(files, market, start, end, near, tighten, vm, variant):
-    # Reuse the exact production signal engine; only position exit logic changes.
     rb.build_rs_rank(files, market)
     cache=rb.DATA_CACHE
+    key=(str(start),str(end))
+    if key not in rb.MARKET_OK_CACHE:
+        md=market.loc[:end]; rb.MARKET_OK_CACHE[key]=(md.close>md.close.rolling(200).mean()).shift(1).fillna(False)
+    market_ok=rb.MARKET_OK_CACHE[key]
     sigs=[]
-    if (str(start),str(end)) not in rb.MARKET_OK_CACHE:
-        md=market.loc[:end]; rb.MARKET_OK_CACHE[(str(start),str(end))]=(md.close>md.close.rolling(200).mean()).shift(1).fillna(False)
-    market_ok=rb.MARKET_OK_CACHE[(str(start),str(end))]
     for sym,d in cache.items():
         for dt,e,stop in rb.signals(sym,d,market,near,tighten,vm):
             if start<=dt<=end and bool(market_ok.reindex([dt]).fillna(False).iloc[0]): sigs.append((dt,sym,e,stop))
-    sigs.sort(); cash=INITIAL; pos={}; trades=[]; curve=[]
-    cfg=VARIANTS[variant]
+    sigs.sort(); cash=INITIAL; pos={}; trades=[]; curve=[]; cfg=VARIANTS[variant]
     for dt in market.index[(market.index>=start)&(market.index<=end)]:
         for sym in list(pos):
-            d=cache[sym];
+            d=cache[sym]
             if dt not in d.index: continue
             px=float(d.loc[dt,'close']); f=rb.FEATURE_CACHE[sym]; ma50=float(f['ma50'].loc[dt]); stop=pos[sym]['stop']; r=pos[sym]['risk']
-            if cfg['trail']=='20d': trail=float(f['trail20'].loc[dt])
-            elif cfg['trail']=='10d': trail=float(f['low10'].loc[dt])
-            else: trail=-np.inf
-            effective_stop=max(stop,trail) if pos[sym]['peak_r']>=cfg['trigger_r'] else stop
-            reason='stop_or_50dma'
-            if cfg['trail']!='none' and pos[sym]['peak_r']>=cfg['trigger_r'] and px<=effective_stop: reason=f"{cfg['trail']}_trail_after_{cfg['trigger_r']}r"
+            peak_r=float(pos[sym]['peak_r']); effective_stop=stop; reason='stop_or_50dma'
+            mode=cfg['mode']
+            if peak_r>=1.0 and mode=='breakeven': effective_stop=max(effective_stop,pos[sym]['entry']); reason='breakeven_after_1r'
+            elif peak_r>=cfg.get('trigger_r',999) and mode=='trail20': effective_stop=max(effective_stop,float(f['trail20'].loc[dt])); reason='20d_trail'
+            elif peak_r>=cfg.get('trigger_r',999) and mode=='trail10': effective_stop=max(effective_stop,float(f['low10'].loc[dt])); reason='10d_trail'
+            elif peak_r>=cfg.get('trigger_r',999) and mode=='atr': effective_stop=max(effective_stop,px-cfg['atr_mult']*float(f['atr14'].loc[dt])); reason=f"atr{cfg['atr_mult']}_trail"
+            elif peak_r>=cfg.get('trigger_r',999) and mode=='trail20_be': effective_stop=max(effective_stop,pos[sym]['entry'],float(f['trail20'].loc[dt])); reason='20d_trail_plus_breakeven'
+            elif mode=='time':
+                held=(dt-pos[sym]['date']).days
+                if held>=cfg['days'] and peak_r<cfg['min_r']:
+                    proceeds=pos[sym]['qty']*px; fee=(pos[sym]['qty']*pos[sym]['entry']+proceeds)*COST_BPS/10000; pnl=proceeds-pos[sym]['cost']-fee; cash+=proceeds-fee
+                    trades.append((pos[sym]['date'],dt,sym,pos[sym]['entry'],px,pos[sym]['qty'],pnl,'time_stop_60d')); del pos[sym]; continue
             if px<=effective_stop or (np.isfinite(ma50) and px<ma50):
                 proceeds=pos[sym]['qty']*px; fee=(pos[sym]['qty']*pos[sym]['entry']+proceeds)*COST_BPS/10000; pnl=proceeds-pos[sym]['cost']-fee; cash+=proceeds-fee
                 trades.append((pos[sym]['date'],dt,sym,pos[sym]['entry'],px,pos[sym]['qty'],pnl,reason)); del pos[sym]
             else:
-                pos[sym]['peak_r']=max(pos[sym]['peak_r'],(px-pos[sym]['entry'])/r)
+                pos[sym]['peak_r']=max(peak_r,(px-pos[sym]['entry'])/r)
         for sdt,sym,e,stop in sigs:
             if sdt!=dt or sym in pos or len(pos)>=MAX_POSITIONS: continue
-            risk=e-stop
-            equity=cash+sum(x['qty']*float(cache[k].loc[dt,'close']) for k,x in pos.items() if dt in cache[k].index)
+            risk=e-stop; equity=cash+sum(x['qty']*float(cache[k].loc[dt,'close']) for k,x in pos.items() if dt in cache[k].index)
             qty=min(int(equity*RISK_PCT/risk),int(cash/(e*(1+COST_BPS/10000)))) if risk>0 else 0
             if qty<=0: continue
             fee=qty*e*COST_BPS/10000; cost=qty*e+fee
