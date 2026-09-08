@@ -92,3 +92,4 @@ jobs:
             metadata/
             metadata_sources/
           if-no-files-found: error
+# Trigger complete research run
