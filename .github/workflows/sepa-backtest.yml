@@ -14,7 +14,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-        # Triggered from main to run the complete five-FY research pipeline.
+        # Complete research pipeline; yearly/regime analysis is the primary performance report.
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
@@ -70,9 +70,9 @@ jobs:
       - name: Run robustness and out-of-sample analysis
         if: steps.data.outputs.ready == 'true'
         run: python robustness_backtest.py
-      - name: Run five-FY performance analysis
+      - name: Run yearly and market-regime analysis
         if: steps.data.outputs.ready == 'true'
-        run: python five_year_analysis.py
+        run: python yearly_regime_analysis.py
       - name: Run walk-forward OOS validation
         if: steps.data.outputs.ready == 'true'
         run: python walk_forward_analysis.py
@@ -95,4 +95,3 @@ jobs:
             metadata/
             metadata_sources/
           if-no-files-found: error
-# Trigger complete research run
