@@ -69,6 +69,9 @@ jobs:
       - name: Run robustness and out-of-sample analysis
         if: steps.data.outputs.ready == 'true'
         run: python robustness_backtest.py
+      - name: Run five-FY performance analysis
+        if: steps.data.outputs.ready == 'true'
+        run: python five_year_analysis.py
       - name: Run walk-forward OOS validation
         if: steps.data.outputs.ready == 'true'
         run: python walk_forward_analysis.py
