@@ -79,6 +79,9 @@ jobs:
       - name: Run trade-level diagnostics
         if: steps.data.outputs.ready == 'true'
         run: python trade_diagnostics.py
+      - name: Run exit-management experiment
+        if: steps.data.outputs.ready == 'true'
+        run: python exit_management_experiment.py
       - name: Run young/small-cap experiment
         if: steps.data.outputs.ready == 'true'
         run: python young_small_cap_experiment.py
