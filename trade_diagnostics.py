@@ -42,7 +42,11 @@ def main():
         if x < 2.0: return '1.50-2.00x'
         return '>=2.00x'
     diag['volume_bucket']=diag.breakout_volume_ratio.map(bucket)
-    diag['rs_strength_pct']=(diag.rs_ratio/diag.rs_ma_ratio-1)*100
+    # rs_ma_ratio is already the relative-strength ratio to its 50-day mean
+    # (RS / RS_MA). The previous formula divided the absolute RS level by this
+    # ratio, producing nonsensical values such as -93%. Measure the intended
+    # distance from the RS moving average directly.
+    diag['rs_strength_pct']=(diag.rs_ma_ratio-1)*100
     diag['pivot_bucket']=pd.cut(diag.distance_from_pivot_pct,[-np.inf,0,1,2,3,np.inf],labels=['<=0','0-1%','1-2%','2-3%','>3%'])
     diag['outcome']=np.where(diag.pnl>0,'win','loss')
     summary=pd.DataFrame([{
