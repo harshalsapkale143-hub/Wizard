@@ -127,40 +127,49 @@ def filing_meta(row, symbol, source='financial-results'):
 
 
 class NSEBrowser:
-    """One browser session for NSE /api catalog calls.
-
-    NSE's /api endpoints are Akamai-gated; plain requests can return 403 even
-    with the normal browser headers. The browser warms the official filing page,
-    then executes same-origin fetch() calls inside that page so the anti-bot
-    clearance/cookies are carried into the API requests.
-    """
+    """One browser session for NSE /api catalog calls."""
     def __init__(self):
         from playwright.sync_api import sync_playwright
         self._pw = sync_playwright().start()
-        self.browser = self._pw.chromium.launch(headless=True)
+        self.browser = self._pw.chromium.launch(headless=True, args=['--disable-http2'])
         self.context = self.browser.new_context(
             user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/134 Safari/537.36',
             locale='en-US',
         )
         self.page = self.context.new_page()
-        self.page.goto(NSE_RESULTS_PAGE, wait_until='domcontentloaded', timeout=60000)
-        self.page.wait_for_timeout(5000)
+        last_error = None
+        for target in (NSE_RESULTS_PAGE, NSE_HOME):
+            for attempt in range(3):
+                try:
+                    self.page.goto(target, wait_until='commit', timeout=60000)
+                    self.page.wait_for_timeout(5000)
+                    print(f'NSE browser warm-up succeeded: {target}')
+                    return
+                except Exception as exc:
+                    last_error = exc
+                    print(f'NSE browser warm-up retry {attempt + 1}/3 for {target}: {type(exc).__name__}: {exc}')
+                    time.sleep(2)
+        raise RuntimeError(f'Unable to establish NSE browser session: {last_error}')
 
     def fetch_json(self, url, params):
-        query = '&'.join(f'{k}={str(v).replace(" ", "+")}' for k, v in params.items())
-        target = url + '?' + query
+        from urllib.parse import urlencode
+        target = url + '?' + urlencode(params)
         result = self.page.evaluate("""async (target) => {
             let last = {status: 0, body: ''};
             for (let i = 0; i < 4; i++) {
-                const r = await fetch(target, {headers: {'Accept': 'application/json'}});
-                last = {status: r.status, body: await r.text()};
-                if (r.status === 200) break;
+                try {
+                    const r = await fetch(target, {headers: {'Accept': 'application/json'}});
+                    last = {status: r.status, body: await r.text()};
+                    if (r.status === 200) break;
+                } catch (e) {
+                    last = {status: 0, body: String(e)};
+                }
                 await new Promise(resolve => setTimeout(resolve, 1500));
             }
             return last;
         }""", target)
         if result.get('status') != 200:
-            raise RuntimeError(f'NSE API HTTP {result.get("status")} for {target}')
+            raise RuntimeError(f'NSE API HTTP {result.get("status")} for {target}: {result.get("body", "")[:200]}')
         return json.loads(result.get('body') or '{}')
 
     def close(self):
@@ -170,19 +179,11 @@ class NSEBrowser:
 
 
 def get_metadata(browser, symbol):
-    return browser.fetch_json(
-        LEGACY_API,
-        {'index': 'equities', 'symbol': symbol, 'period': 'Quarterly'},
-    )
+    return browser.fetch_json(LEGACY_API, {'index': 'equities', 'symbol': symbol, 'period': 'Quarterly'})
 
 
 def get_integrated_metadata(browser, symbol):
-    # Current NSE contract: type filtering is applied in the returned rows;
-    # period=Quarterly returns the complete integrated-financial history.
-    return browser.fetch_json(
-        INTEGRATED_API,
-        {'index': 'equities', 'symbol': symbol, 'period': 'Quarterly'},
-    )
+    return browser.fetch_json(INTEGRATED_API, {'index': 'equities', 'symbol': symbol, 'period': 'Quarterly'})
 
 
 def page_text(url, session):
@@ -204,9 +205,6 @@ def page_text(url, session):
 
 
 def extract_number_after(text, labels):
-    # NSE iXBRL HTML presents the label followed by the current-quarter and YTD
-    # values. Taking the first numeric value is intentional: it is the quarter
-    # figure, which is what the SEPA growth test consumes.
     for label in labels:
         m = re.search(re.escape(label) + r'(.{0,260}?)', text, flags=re.I)
         if not m:
@@ -256,16 +254,13 @@ def normalize(payload, symbol, session, source):
     for row in metadata_rows(payload):
         if not isinstance(row, dict):
             continue
-        # Integrated endpoint includes Governance and other integrated rows.
         if source == 'integrated-financials':
             typ = str(row.get('type', '')).strip().lower()
             if typ != 'integrated filing- financials':
                 continue
-            # Exact integrated-field aliases used by NSE.
             row = dict(row)
             row.setdefault('toDate', row.get('qe_Date'))
             row.setdefault('broadcastDate', row.get('broadcast_Date'))
-            row.setdefault('consolidated', row.get('consolidated'))
             row.setdefault('period', 'Quarterly')
         meta = filing_meta(row, symbol, source)
         if meta is None or not is_quarter(meta):
@@ -330,9 +325,7 @@ def main():
 
                 if rows:
                     df = pd.DataFrame(rows)
-                    df = df.drop_duplicates(
-                        ['period_end', 'filing_date', 'consolidated', 'cumulative', 'source']
-                    ).sort_values(['filing_date', 'period_end'])
+                    df = df.drop_duplicates(['period_end', 'filing_date', 'consolidated', 'cumulative', 'source']).sort_values(['filing_date', 'period_end'])
                     df.to_csv(path, index=False)
                     ok += 1
                     diagnostics.append({
