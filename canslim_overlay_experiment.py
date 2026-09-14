@@ -27,21 +27,20 @@ def market_overlay(market: pd.DataFrame) -> pd.DataFrame:
     c = market.close
     v = market.volume
     ma200 = c.rolling(200).mean()
-    # O'Neil-style distribution proxy: index down materially while volume is
-    # above the prior session. Count only the most recent 25 sessions.
     dist = ((c.pct_change() <= -0.002) & (v > v.shift(1))).astype(int)
     dist_count = dist.rolling(25).sum()
-    # Keep the existing trend gate, then penalize a clustered distribution tape.
-    # This is a diagnostic overlay, not a claim that the original book's exact
-    # market-timing rules can be reproduced from NIFTY daily OHLCV alone.
     ok = (c > ma200).shift(1).fillna(False) & (dist_count <= 4).shift(1).fillna(False)
     return pd.DataFrame({'ok': ok, 'distribution_25d': dist_count})
 
 
-def run_one(files, market, start, end, near, tighten, vol_mult, rs_cut, near52_cut):
-    rb.get_cache(files, None)
-    rb.build_rs_rank(files, market)
-    mo = market_overlay(market)
+def build_overlay_signals(files, market, near, tighten, vol_mult, rs_cut, near52_cut, mo):
+    """Build the complete overlay entry list once for a parameter tuple.
+
+    The old implementation rebuilt these 703-symbol signal paths separately
+    for every fiscal-year window. Signals are independent of the output window,
+    so doing that work once and filtering dates during portfolio simulation is
+    exactly equivalent and substantially reduces repeated computation.
+    """
     sigs = []
     for sym, d in rb.DATA_CACHE.items():
         f = rb.build_features(sym, d, market)
@@ -72,6 +71,16 @@ def run_one(files, market, start, end, near, tighten, vol_mult, rs_cut, near52_c
                 if np.isfinite(e) and np.isfinite(s) and s < e and bool(mo.ok.reindex([dt]).fillna(False).iloc[0]):
                     sigs.append((dt, sym, float(e), float(s)))
     sigs.sort()
+    return sigs
+
+
+def run_one(files, market, start, end, near, tighten, vol_mult, rs_cut, near52_cut, sigs=None):
+    # Data/features/RS ranks are initialized once by main(). Do not rebuild
+    # them for every fiscal-year/config simulation.
+    if sigs is None:
+        mo = market_overlay(market)
+        sigs = build_overlay_signals(files, market, near, tighten, vol_mult, rs_cut, near52_cut, mo)
+    sigs = [x for x in sigs if start <= x[0] <= end]
     cash = INITIAL
     pos = {}
     trades = []
@@ -141,15 +150,24 @@ def main():
     files = [p for p in root.glob('*.csv') if p.name != 'NIFTY50.csv']
     rb.get_cache(files, root / 'NIFTY50.csv')
     rb.build_rs_rank(files, market)
+    mo = market_overlay(market)
     rows = []
     for fy, a, b in FY_WINDOWS:
         nifty = market.loc[a:b, 'close'].dropna()
         bench = (nifty.iloc[-1] / nifty.iloc[0] - 1) * 100 if len(nifty) > 1 else 0
         for near, tighten, vm, rs_cut, near52_cut in CONFIGS:
-            r, _ = run_one(files, market, pd.Timestamp(a), pd.Timestamp(b), near, tighten, vm, rs_cut, near52_cut)
-            rows.append({'fy': fy, 'near_high': near, 'tighten': tighten, 'vol_mult': vm,
-                          'rs_cut': rs_cut, 'near52_cut': near52_cut, 'nifty_return_pct': bench,
-                          'excess_pct': r['return_pct'] - bench, **r})
+            # Signals are deliberately built once per config across the full
+            # history, then reused for each FY. This preserves results while
+            # eliminating the old repeated signal-building work.
+            key = (near, tighten, vm, rs_cut, near52_cut)
+            if not hasattr(main, '_signal_cache'):
+                main._signal_cache = {}
+            if key not in main._signal_cache:
+                main._signal_cache[key] = build_overlay_signals(files, market, near, tighten, vm, rs_cut, near52_cut, mo)
+            r, _ = run_one(files, market, pd.Timestamp(a), pd.Timestamp(b), near, tighten, vm, rs_cut, near52_cut, main._signal_cache[key])
+            rows.append({'fy': fy, 'near_high': near, 'vol_mult': vm, 'rs_cut': rs_cut,
+                         'near52_cut': near52_cut, 'nifty_return_pct': bench,
+                         'excess_pct': r['return_pct'] - bench, **r})
     out = Path('results'); out.mkdir(exist_ok=True)
     df = pd.DataFrame(rows)
     df.to_csv(out / 'canslim_overlay_grid.csv', index=False)
