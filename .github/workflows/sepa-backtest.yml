@@ -102,6 +102,9 @@ jobs:
       - name: Run point-in-time fundamental SEPA research
         if: steps.data.outputs.ready == 'true' && steps.fundamentals.outcome == 'success'
         run: /usr/bin/time -f 'FUNDAMENTAL_RESEARCH_SECONDS=%e' python fundamental_sepa_experiment.py
+      - name: Run point-in-time EPS growth and acceleration experiment
+        if: steps.data.outputs.ready == 'true' && steps.fundamentals.outcome == 'success'
+        run: /usr/bin/time -f 'EPS_EXPERIMENT_SECONDS=%e' python fundamental_eps_experiment.py
       - name: Upload results and metadata
         if: always() && steps.data.outputs.ready == 'true'
         uses: actions/upload-artifact@v6
