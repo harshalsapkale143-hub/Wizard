@@ -6,8 +6,9 @@ research universe; it falls back to the current NIFTY-50 list only when the
 metadata universe is unavailable.
 
 Cached files are reused. A symbol is downloaded again only when its stored
-history is stale; this is important for GitHub Actions, where the data/
-directory is restored from the Actions cache before this script runs.
+history is stale relative to the *research end date*; this is important for
+GitHub Actions, where the data/ directory is restored from the Actions cache
+before this script runs.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -18,9 +19,11 @@ import yfinance as yf
 START = "2018-01-01"
 END = "2026-09-08"
 OUT = Path("data")
-# A daily NSE series is considered current if its last observation is within
-# this many calendar days of today. This naturally covers weekends/holidays
-# without forcing a network request for every cached symbol.
+# Research data is only required through END. Compare cache freshness against
+# that fixed research boundary rather than wall-clock today; otherwise a
+# completed Sep-08 dataset becomes "stale" every day after Sep-11 and causes
+# 700+ unnecessary Yahoo requests even though the research period has not
+# changed.
 STALE_AFTER_DAYS = 3
 REFRESH_OVERLAP_DAYS = 5
 
@@ -62,14 +65,14 @@ def refresh(ticker: str, name: str) -> tuple[bool, bool]:
             old=pd.read_csv(path)
             old['timestamp']=pd.to_datetime(old['timestamp'],errors='coerce').dt.tz_localize(None)
             old=old.dropna(subset=['timestamp']).sort_values('timestamp')
-            today=pd.Timestamp.now().normalize()
+            research_end=pd.Timestamp(END).normalize()
             if len(old)>=250:
-                age_days=(today-old['timestamp'].max().normalize()).days
+                # Compare with the fixed research boundary, not today's date.
+                # A cache complete through END is a true cache hit and should
+                # never trigger a network refresh merely because days elapsed.
+                age_days=(research_end-old['timestamp'].max().normalize()).days
                 if age_days <= STALE_AFTER_DAYS:
-                    # Cached history is current enough. Do not hit Yahoo at all.
                     return True, False
-                # Stale cache: request only a short overlap and merge it into
-                # the existing history, rather than redownloading from 2018.
                 start=(old['timestamp'].max()-pd.Timedelta(days=REFRESH_OVERLAP_DAYS)).strftime('%Y-%m-%d')
                 fresh=download(ticker,start)
                 if not fresh.empty:
@@ -78,7 +81,6 @@ def refresh(ticker: str, name: str) -> tuple[bool, bool]:
                     merged.to_csv(path,index=False)
                     return True, True
                 return True, True
-            # Old/incomplete cache: rebuild the full history.
         except Exception as e:
             print(f'{name}: cached file unusable, rebuilding: {e}')
     d=download(ticker)
@@ -98,6 +100,8 @@ def main():
         print(f'[{i}/{len(jobs)}] Checking {ticker}')
         ok, did_refresh=refresh(ticker,name)
         if ok:
+            # refresh() already parsed the file, but retaining this lightweight
+            # row-count check keeps the existing logging/validation behavior.
             rows=len(pd.read_csv(OUT/f'{name}.csv'))
             good+=1
             if did_refresh: refreshed+=1
