@@ -7,9 +7,6 @@ on:
   push:
     branches: [ main, master ]
 
-# A new push supersedes an older research run. Without this, repeated commits
-# can leave several 20-30 minute backtests running at the same time, making the
-# repository appear to get progressively slower while consuming runner time.
 concurrency:
   group: sepa-backtest-${{ github.ref }}
   cancel-in-progress: true
@@ -25,7 +22,6 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-          cache: pip
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -41,7 +37,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: data
-          key: sepa-research-data-${{ hashFiles('metadata/universe_symbols.csv') }}-${{ github.run_number }}
+          key: sepa-research-data-${{ hashFiles('metadata/universe_symbols.csv') }}-${{ github.run_id }}
           restore-keys: |
             sepa-research-data-${{ hashFiles('metadata/universe_symbols.csv') }}-
       - name: Download and build historical research universe
@@ -52,7 +48,7 @@ jobs:
         if: always()
         with:
           path: data
-          key: sepa-research-data-${{ hashFiles('metadata/universe_symbols.csv') }}-${{ github.run_number }}
+          key: sepa-research-data-${{ hashFiles('metadata/universe_symbols.csv') }}-${{ github.run_id }}
       - name: Validate daily market data
         id: data
         shell: bash
@@ -71,10 +67,6 @@ jobs:
           if len(valid)<100: raise SystemExit(f'Need at least 100 historical stock datasets, found {len(valid)}')
           PY
           echo 'ready=true' >> "$GITHUB_OUTPUT"
-
-      # Technical research is the primary path. Keep the NSE fundamentals
-      # enrichment out of the critical path so browser/API latency cannot delay
-      # the actual backtest and OOS results.
       - name: Run daily SEPA/VCP backtest
         if: steps.data.outputs.ready == 'true'
         run: /usr/bin/time -f 'DAILY_BACKTEST_SECONDS=%e' python daily_sepa_backtest.py --data-dir data --market NIFTY50.csv --output results
@@ -99,9 +91,6 @@ jobs:
       - name: Run CAN SLIM technical overlay experiment
         if: steps.data.outputs.ready == 'true'
         run: /usr/bin/time -f 'CANSLIM_EXPERIMENT_SECONDS=%e' python canslim_overlay_experiment.py
-
-      # Fundamental ingestion is deliberately last. It is enrichment/research,
-      # not a prerequisite for the technical SEPA/VCP backtest.
       - name: Install browser runtime for fundamentals
         if: steps.data.outputs.ready == 'true'
         run: python -m playwright install --with-deps chromium
