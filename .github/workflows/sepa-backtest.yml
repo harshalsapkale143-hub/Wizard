@@ -7,6 +7,13 @@ on:
   push:
     branches: [ main, master ]
 
+# A new push supersedes an older research run. Without this, repeated commits
+# can leave several 20-30 minute backtests running at the same time, making the
+# repository appear to get progressively slower while consuming runner time.
+concurrency:
+  group: sepa-backtest-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   backtest:
     runs-on: ubuntu-latest
@@ -18,11 +25,11 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
+          cache: pip
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pandas numpy yfinance requests beautifulsoup4 openpyxl xlrd playwright
-          python -m playwright install --with-deps chromium
       - name: Download NSE metadata sources
         run: python scripts/download_nse_metadata_sources.py
       - name: Build point-in-time metadata
@@ -38,7 +45,8 @@ jobs:
           restore-keys: |
             sepa-research-data-${{ hashFiles('metadata/universe_symbols.csv') }}-
       - name: Download and build historical research universe
-        run: python scripts/build_nifty50_daily.py
+        run: |
+          /usr/bin/time -f 'MARKET_DATA_SECONDS=%e' python scripts/build_nifty50_daily.py
       - name: Save refreshed historical market-data cache
         uses: actions/cache/save@v4
         if: always()
@@ -64,42 +72,47 @@ jobs:
           PY
           echo 'ready=true' >> "$GITHUB_OUTPUT"
 
-      # Fundamental ingestion is a research enrichment layer, not a prerequisite
-      # for the technical SEPA/VCP backtest. NSE/Akamai availability must not
-      # prevent the independent market-data backtest and OOS validation from running.
+      # Technical research is the primary path. Keep the NSE fundamentals
+      # enrichment out of the critical path so browser/API latency cannot delay
+      # the actual backtest and OOS results.
+      - name: Run daily SEPA/VCP backtest
+        if: steps.data.outputs.ready == 'true'
+        run: /usr/bin/time -f 'DAILY_BACKTEST_SECONDS=%e' python daily_sepa_backtest.py --data-dir data --market NIFTY50.csv --output results
+      - name: Run robustness and out-of-sample analysis
+        if: steps.data.outputs.ready == 'true'
+        run: /usr/bin/time -f 'ROBUSTNESS_SECONDS=%e' python robustness_backtest.py
+      - name: Run yearly and market-regime analysis
+        if: steps.data.outputs.ready == 'true'
+        run: /usr/bin/time -f 'YEARLY_REGIME_SECONDS=%e' python yearly_regime_analysis.py
+      - name: Run walk-forward OOS validation
+        if: steps.data.outputs.ready == 'true'
+        run: /usr/bin/time -f 'WALK_FORWARD_SECONDS=%e' python walk_forward_analysis.py
+      - name: Run trade-level diagnostics
+        if: steps.data.outputs.ready == 'true'
+        run: /usr/bin/time -f 'TRADE_DIAGNOSTICS_SECONDS=%e' python trade_diagnostics.py
+      - name: Run exit-management experiment
+        if: steps.data.outputs.ready == 'true'
+        run: /usr/bin/time -f 'EXIT_EXPERIMENT_SECONDS=%e' python exit_management_experiment.py
+      - name: Run young/small-cap experiment
+        if: steps.data.outputs.ready == 'true'
+        run: /usr/bin/time -f 'SMALL_CAP_EXPERIMENT_SECONDS=%e' python young_small_cap_experiment.py
+      - name: Run CAN SLIM technical overlay experiment
+        if: steps.data.outputs.ready == 'true'
+        run: /usr/bin/time -f 'CANSLIM_EXPERIMENT_SECONDS=%e' python canslim_overlay_experiment.py
+
+      # Fundamental ingestion is deliberately last. It is enrichment/research,
+      # not a prerequisite for the technical SEPA/VCP backtest.
+      - name: Install browser runtime for fundamentals
+        if: steps.data.outputs.ready == 'true'
+        run: python -m playwright install --with-deps chromium
       - name: Build point-in-time historical fundamentals
         id: fundamentals
         if: steps.data.outputs.ready == 'true'
         continue-on-error: true
-        run: python scripts/build_historical_fundamentals.py
-
-      - name: Run daily SEPA/VCP backtest
-        if: steps.data.outputs.ready == 'true'
-        run: python daily_sepa_backtest.py --data-dir data --market NIFTY50.csv --output results
-      - name: Run robustness and out-of-sample analysis
-        if: steps.data.outputs.ready == 'true'
-        run: python robustness_backtest.py
-      - name: Run yearly and market-regime analysis
-        if: steps.data.outputs.ready == 'true'
-        run: python yearly_regime_analysis.py
-      - name: Run walk-forward OOS validation
-        if: steps.data.outputs.ready == 'true'
-        run: python walk_forward_analysis.py
-      - name: Run trade-level diagnostics
-        if: steps.data.outputs.ready == 'true'
-        run: python trade_diagnostics.py
-      - name: Run exit-management experiment
-        if: steps.data.outputs.ready == 'true'
-        run: python exit_management_experiment.py
-      - name: Run young/small-cap experiment
-        if: steps.data.outputs.ready == 'true'
-        run: python young_small_cap_experiment.py
-      - name: Run CAN SLIM technical overlay experiment
-        if: steps.data.outputs.ready == 'true'
-        run: python canslim_overlay_experiment.py
+        run: /usr/bin/time -f 'FUNDAMENTALS_SECONDS=%e' python scripts/build_historical_fundamentals.py
       - name: Run point-in-time fundamental SEPA research
         if: steps.data.outputs.ready == 'true' && steps.fundamentals.outcome == 'success'
-        run: python fundamental_sepa_experiment.py
+        run: /usr/bin/time -f 'FUNDAMENTAL_RESEARCH_SECONDS=%e' python fundamental_sepa_experiment.py
       - name: Upload results and metadata
         if: always() && steps.data.outputs.ready == 'true'
         uses: actions/upload-artifact@v6
