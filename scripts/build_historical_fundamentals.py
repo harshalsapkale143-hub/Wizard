@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 from typing import Any
@@ -12,11 +11,14 @@ ROOT = Path('metadata')
 OUT = Path('fundamentals')
 START = '01-01-2019'
 END = '31-03-2026'
-
 ALIASES = {
     'revenue': ['revenueFromOperations', 'revenueFromOperation', 'revenue', 'totalRevenue', 'incomeFromOperations'],
     'pat': ['profitAfterTax', 'profitLossForThePeriod', 'profitLoss', 'netProfit', 'netProfitAfterTax'],
     'eps': ['basicEarningsPerShare', 'basicEPS', 'eps', 'dilutedEarningsPerShare'],
+}
+TEXT_ALIASES = {
+    'period_type': ['period'], 'cumulative': ['cumulative'], 'consolidated': ['consolidated'],
+    'audited': ['audited'], 'relating_to': ['relatingTo', 'relating'],
 }
 
 
@@ -56,10 +58,20 @@ def pick(flat: dict[str, Any], aliases):
     return None
 
 
+def text_pick(flat: dict[str, Any], aliases):
+    low = {k.lower(): v for k, v in flat.items()}
+    for a in aliases:
+        if a.lower() in low and low[a.lower()] not in (None, ''):
+            return str(low[a.lower()])
+    for k, v in low.items():
+        if any(a.lower() in k for a in aliases) and v not in (None, ''):
+            return str(v)
+    return ''
+
+
 def get_json(session, symbol):
-    url = 'https://www.nseindia.com/api/corporates-financial-results'
-    params = {'index': 'equities', 'symbol': symbol, 'from_date': START, 'to_date': END}
-    r = session.get(url, params=params, timeout=30)
+    r = session.get('https://www.nseindia.com/api/corporates-financial-results',
+                    params={'index': 'equities', 'symbol': symbol, 'from_date': START, 'to_date': END}, timeout=30)
     r.raise_for_status()
     return r.json()
 
@@ -85,12 +97,18 @@ def normalize(payload, symbol):
         bd = pd.to_datetime(broadcast, errors='coerce', dayfirst=True)
         if pd.isna(pe) or pd.isna(bd):
             continue
-        revenue = pick(flat, ALIASES['revenue'])
-        pat = pick(flat, ALIASES['pat'])
-        eps = pick(flat, ALIASES['eps'])
+        revenue, pat, eps = (pick(flat, ALIASES[k]) for k in ('revenue', 'pat', 'eps'))
         if revenue is None and pat is None and eps is None:
             continue
-        out.append({'symbol': symbol, 'period_end': pe.date().isoformat(), 'filing_date': bd.date().isoformat(), 'revenue': revenue, 'pat': pat, 'eps': eps})
+        out.append({
+            'symbol': symbol, 'period_end': pe.date().isoformat(), 'filing_date': bd.date().isoformat(),
+            'revenue': revenue, 'pat': pat, 'eps': eps,
+            'period_type': text_pick(flat, TEXT_ALIASES['period_type']),
+            'cumulative': text_pick(flat, TEXT_ALIASES['cumulative']),
+            'consolidated': text_pick(flat, TEXT_ALIASES['consolidated']),
+            'audited': text_pick(flat, TEXT_ALIASES['audited']),
+            'relating_to': text_pick(flat, TEXT_ALIASES['relating_to']),
+        })
     return out
 
 
@@ -100,16 +118,15 @@ def main():
     symbols = sorted(set(meta[symbol_col].dropna().astype(str).str.replace('.NS', '', regex=False)))
     OUT.mkdir(parents=True, exist_ok=True)
     session = requests.Session()
-    session.headers.update({'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36', 'Accept': 'application/json,text/plain,*/*', 'Referer': 'https://www.nseindia.com/'})
+    session.headers.update({'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json,text/plain,*/*', 'Referer': 'https://www.nseindia.com/'})
     session.get('https://www.nseindia.com/', timeout=30)
     ok = 0
     for i, symbol in enumerate(symbols, 1):
         path = OUT / f'{symbol}.csv'
         try:
-            payload = get_json(session, symbol)
-            rows = normalize(payload, symbol)
+            rows = normalize(get_json(session, symbol), symbol)
             if rows:
-                pd.DataFrame(rows).drop_duplicates(['period_end', 'filing_date']).sort_values('filing_date').to_csv(path, index=False)
+                pd.DataFrame(rows).drop_duplicates(['period_end', 'filing_date', 'consolidated', 'cumulative']).sort_values(['filing_date', 'period_end']).to_csv(path, index=False)
                 ok += 1
             elif path.exists():
                 path.unlink()
