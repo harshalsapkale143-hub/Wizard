@@ -85,6 +85,9 @@ jobs:
       - name: Run young/small-cap experiment
         if: steps.data.outputs.ready == 'true'
         run: python young_small_cap_experiment.py
+      - name: Run CAN SLIM technical overlay experiment
+        if: steps.data.outputs.ready == 'true'
+        run: python canslim_overlay_experiment.py
       - name: Upload results and metadata
         if: always() && steps.data.outputs.ready == 'true'
         uses: actions/upload-artifact@v6
