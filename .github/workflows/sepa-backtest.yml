@@ -63,9 +63,16 @@ jobs:
           if len(valid)<100: raise SystemExit(f'Need at least 100 historical stock datasets, found {len(valid)}')
           PY
           echo 'ready=true' >> "$GITHUB_OUTPUT"
+
+      # Fundamental ingestion is a research enrichment layer, not a prerequisite
+      # for the technical SEPA/VCP backtest. NSE/Akamai availability must not
+      # prevent the independent market-data backtest and OOS validation from running.
       - name: Build point-in-time historical fundamentals
+        id: fundamentals
         if: steps.data.outputs.ready == 'true'
+        continue-on-error: true
         run: python scripts/build_historical_fundamentals.py
+
       - name: Run daily SEPA/VCP backtest
         if: steps.data.outputs.ready == 'true'
         run: python daily_sepa_backtest.py --data-dir data --market NIFTY50.csv --output results
@@ -91,7 +98,7 @@ jobs:
         if: steps.data.outputs.ready == 'true'
         run: python canslim_overlay_experiment.py
       - name: Run point-in-time fundamental SEPA research
-        if: steps.data.outputs.ready == 'true'
+        if: steps.data.outputs.ready == 'true' && steps.fundamentals.outcome == 'success'
         run: python fundamental_sepa_experiment.py
       - name: Upload results and metadata
         if: always() && steps.data.outputs.ready == 'true'
