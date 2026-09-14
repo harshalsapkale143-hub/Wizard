@@ -21,7 +21,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy yfinance requests beautifulsoup4 openpyxl xlrd
+          pip install pandas numpy yfinance requests beautifulsoup4 openpyxl xlrd playwright
+          python -m playwright install --with-deps chromium
       - name: Download NSE metadata sources
         run: python scripts/download_nse_metadata_sources.py
       - name: Build point-in-time metadata
