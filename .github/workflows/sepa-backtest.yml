@@ -133,7 +133,8 @@ jobs:
       - name: Build point-in-time historical fundamentals
         id: fundamentals
         if: steps.data.outputs.ready == 'true'
-        continue-on-error: true
+        continue-on-error: false
+        timeout-minutes: 45
         shell: bash
         run: |
           cp metadata/universe_symbols.csv /tmp/fundamental_candidate_universe.csv
