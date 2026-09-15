@@ -307,7 +307,8 @@ def normalize(payload, symbol, session, source, browser=None):
             continue
         if is_cumulative(meta['cumulative']):
             continue
-        if not meta['xbrl'] or meta['xbrl'].endswith('nseindia.com/'):
+        xbrl = str(meta.get('xbrl') or '').strip()
+        if not xbrl or xbrl in {'-', '_', '—'} or xbrl.endswith('nseindia.com/'):
             continue
         out.append(meta)
 
@@ -324,9 +325,29 @@ def normalize(payload, symbol, session, source, browser=None):
             g = cons
         chosen.append(g.sort_values('filing_date').iloc[-1].to_dict())
 
+    # Deduplicate expensive XBRL fetches within a symbol.
     rows = []
+    text_cache = {}
     for meta in chosen:
-        revenue, pat, eps = extract_xbrl(meta['xbrl'], session, browser)
+        xbrl = str(meta.get('xbrl') or '').strip()
+        if xbrl not in text_cache:
+            text_cache[xbrl] = page_text(xbrl, session, browser)
+        text = text_cache[xbrl]
+        if text:
+            revenue = extract_number_after(text, ['Revenue from operations'])
+            pat = extract_number_after(text, [
+                'Total profit (loss) for period',
+                'Net Profit Loss for the period from continuing operations',
+                'Profit (loss) for the period',
+                'Profit for the period',
+            ])
+            eps = extract_number_after(text, [
+                'Basic earnings (loss) per share from continuing operations',
+                'Basic earnings (loss) per share',
+                'Basic EPS',
+            ])
+        else:
+            revenue = pat = eps = None
         if revenue is None and pat is None and eps is None:
             continue
         meta.update({
@@ -356,6 +377,25 @@ def main():
         for i, symbol in enumerate(symbols, 1):
             path = OUT / f'{symbol}.csv'
             try:
+                if path.exists():
+                    try:
+                        existing = pd.read_csv(path)
+                        required = {'period_end','filing_date','eps','revenue','pat'}
+                        if len(existing) >= 5 and required.issubset(existing.columns):
+                            ok += 1
+                            diagnostics.append({
+                                'symbol': symbol,
+                                'rows': len(existing),
+                                'first_period': existing.period_end.min(),
+                                'last_period': existing.period_end.max(),
+                                'first_filing': existing.filing_date.min(),
+                                'last_filing': existing.filing_date.max(),
+                                'sources': '|'.join(sorted(set(existing.get('source', pd.Series(dtype=str)).dropna().astype(str)))) if 'source' in existing else '',
+                            })
+                            print(f'[{i}/{len(symbols)}] {symbol}: reusing cached fundamentals')
+                            continue
+                    except Exception:
+                        pass
                 rows = normalize(get_metadata(browser, symbol), symbol, session, 'financial-results', browser)
                 try:
                     integrated = get_integrated_metadata(browser, symbol)
