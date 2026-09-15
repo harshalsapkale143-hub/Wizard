@@ -99,7 +99,6 @@ jobs:
         shell: bash
         run: |
           cp metadata/universe_symbols.csv /tmp/full_universe_symbols.csv
-          trap 'cp /tmp/full_universe_symbols.csv metadata/universe_symbols.csv' EXIT
           python - <<'PY'
           from pathlib import Path
           import pandas as pd
