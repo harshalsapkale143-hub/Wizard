@@ -94,17 +94,66 @@ jobs:
       - name: Install browser runtime for fundamentals
         if: steps.data.outputs.ready == 'true'
         run: python -m playwright install --with-deps chromium
+      - name: Prepare compact fundamental universe
+        if: steps.data.outputs.ready == 'true'
+        shell: bash
+        run: |
+          cp metadata/universe_symbols.csv /tmp/full_universe_symbols.csv
+          trap 'cp /tmp/full_universe_symbols.csv metadata/universe_symbols.csv' EXIT
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+
+          universe = pd.read_csv('metadata/universe_symbols.csv')
+          symbol_col = next(c for c in universe.columns if c.lower() in {'symbol', 'symbols', 'ticker'})
+          candidates = set()
+          for path in Path('results').glob('*trades.csv'):
+              try:
+                  df = pd.read_csv(path, usecols=lambda c: c.lower() in {'symbol','ticker'})
+              except Exception:
+                  continue
+              for col in df.columns:
+                  candidates.update(df[col].dropna().astype(str).str.replace('.NS','',regex=False).str.strip())
+          candidates.discard('')
+          compact = universe[universe[symbol_col].astype(str).str.replace('.NS','',regex=False).isin(candidates)].copy()
+          if len(compact) < 10:
+              raise SystemExit(f'Only {len(compact)} symbols found in technical trade outputs; refusing to run an underpowered fundamental sample.')
+          compact.to_csv('metadata/universe_symbols.csv', index=False)
+          Path('metadata/fundamental_candidate_symbols.txt').write_text('\n'.join(sorted(candidates)) + '\n')
+          print(f'Fundamental candidate universe: {len(compact)} symbols from {len(candidates)} trade-output symbols')
+          print('Sources:', ', '.join(p.name for p in Path('results').glob('*trades.csv')))
+          PY
+      - name: Restore historical fundamentals cache
+        if: steps.data.outputs.ready == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: fundamentals
+          key: sepa-fundamentals-${{ hashFiles('metadata/fundamental_candidate_symbols.txt') }}-${{ github.run_id }}
+          restore-keys: |
+            sepa-fundamentals-
       - name: Build point-in-time historical fundamentals
         id: fundamentals
         if: steps.data.outputs.ready == 'true'
         continue-on-error: true
+        shell: bash
         run: /usr/bin/time -f 'FUNDAMENTALS_SECONDS=%e' python scripts/build_historical_fundamentals.py
+      - name: Save refreshed historical fundamentals cache
+        if: always() && steps.data.outputs.ready == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: fundamentals
+          key: sepa-fundamentals-${{ hashFiles('metadata/fundamental_candidate_symbols.txt') }}-${{ github.run_id }}
       - name: Run point-in-time fundamental SEPA research
         if: steps.data.outputs.ready == 'true' && steps.fundamentals.outcome == 'success'
         run: /usr/bin/time -f 'FUNDAMENTAL_RESEARCH_SECONDS=%e' python fundamental_sepa_experiment.py
       - name: Run point-in-time EPS growth and acceleration experiment
         if: steps.data.outputs.ready == 'true' && steps.fundamentals.outcome == 'success'
         run: /usr/bin/time -f 'EPS_EXPERIMENT_SECONDS=%e' python fundamental_eps_experiment.py
+      - name: Restore full point-in-time metadata
+        if: always() && steps.data.outputs.ready == 'true'
+        shell: bash
+        run: |
+          if test -f /tmp/full_universe_symbols.csv; then cp /tmp/full_universe_symbols.csv metadata/universe_symbols.csv; fi
       - name: Upload results and metadata
         if: always() && steps.data.outputs.ready == 'true'
         uses: actions/upload-artifact@v6
