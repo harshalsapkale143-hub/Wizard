@@ -127,7 +127,7 @@ def filing_meta(row, symbol, source='financial-results'):
 
 
 class NSEBrowser:
-    """One browser session for NSE /api catalog calls."""
+    """NSE HTTP client using Playwright's request stack, without page navigation."""
     def __init__(self):
         from playwright.sync_api import sync_playwright
         self._pw = sync_playwright().start()
@@ -135,42 +135,77 @@ class NSEBrowser:
         self.context = self.browser.new_context(
             user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/134 Safari/537.36',
             locale='en-US',
+            extra_http_headers={
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': NSE_HOME,
+                'Accept': 'application/json,text/plain,*/*',
+            },
         )
-        self.page = self.context.new_page()
+        self.request = self.context.request
+        self._bootstrap()
+
+    def _bootstrap(self):
         last_error = None
-        for target in (NSE_RESULTS_PAGE, NSE_HOME):
-            for attempt in range(3):
-                try:
-                    self.page.goto(target, wait_until='commit', timeout=60000)
-                    self.page.wait_for_timeout(5000)
-                    print(f'NSE browser warm-up succeeded: {target}')
+        for attempt in range(5):
+            try:
+                response = self.request.get(NSE_HOME, timeout=30000, fail_on_status_code=False)
+                print(f'NSE HTTP bootstrap status={response.status}')
+                if response.status in (200, 301, 302, 403):
                     return
-                except Exception as exc:
-                    last_error = exc
-                    print(f'NSE browser warm-up retry {attempt + 1}/3 for {target}: {type(exc).__name__}: {exc}')
-                    time.sleep(2)
-        raise RuntimeError(f'Unable to establish NSE browser session: {last_error}')
+                last_error = RuntimeError(f'HTTP {response.status}')
+            except Exception as exc:
+                last_error = exc
+                print(f'NSE HTTP bootstrap retry {attempt + 1}/5: {type(exc).__name__}: {exc}')
+            time.sleep(2)
+        print(f'NSE HTTP bootstrap did not return a normal response: {last_error}; continuing with direct API retries')
 
     def fetch_json(self, url, params):
         from urllib.parse import urlencode
         target = url + '?' + urlencode(params)
-        result = self.page.evaluate("""async (target) => {
-            let last = {status: 0, body: ''};
-            for (let i = 0; i < 4; i++) {
-                try {
-                    const r = await fetch(target, {headers: {'Accept': 'application/json'}});
-                    last = {status: r.status, body: await r.text()};
-                    if (r.status === 200) break;
-                } catch (e) {
-                    last = {status: 0, body: String(e)};
-                }
-                await new Promise(resolve => setTimeout(resolve, 1500));
-            }
-            return last;
-        }""", target)
-        if result.get('status') != 200:
-            raise RuntimeError(f'NSE API HTTP {result.get("status")} for {target}: {result.get("body", "")[:200]}')
-        return json.loads(result.get('body') or '{}')
+        last_error = None
+        for attempt in range(5):
+            try:
+                response = self.request.get(
+                    target,
+                    timeout=30000,
+                    fail_on_status_code=False,
+                    headers={
+                        'Accept': 'application/json, text/plain, */*',
+                        'Referer': NSE_RESULTS_PAGE,
+                        'X-Requested-With': 'XMLHttpRequest',
+                    },
+                )
+                body = response.text()
+                if response.status == 200:
+                    return json.loads(body or '{}')
+                last_error = RuntimeError(f'NSE API HTTP {response.status}: {body[:200]}')
+            except Exception as exc:
+                last_error = exc
+                print(f'NSE API retry {attempt + 1}/5 for {target}: {type(exc).__name__}: {exc}')
+            time.sleep(2)
+        raise RuntimeError(f'NSE API failed after retries for {target}: {last_error}')
+
+    def fetch_text(self, url):
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = self.request.get(
+                    url,
+                    timeout=30000,
+                    fail_on_status_code=False,
+                    headers={
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Referer': NSE_RESULTS_PAGE,
+                    },
+                )
+                if response.status == 200:
+                    return response.text()
+                last_error = RuntimeError(f'HTTP {response.status}')
+            except Exception as exc:
+                last_error = exc
+            time.sleep(1)
+        print(f'NSE XBRL fetch failed: {url}: {last_error}')
+        return ''
 
     def close(self):
         self.context.close()
@@ -186,7 +221,7 @@ def get_integrated_metadata(browser, symbol):
     return browser.fetch_json(INTEGRATED_API, {'index': 'equities', 'symbol': symbol, 'period': 'Quarterly'})
 
 
-def page_text(url, session):
+def page_text(url, session, browser=None):
     if not url or url.lower() in {'none', 'nan', 'https://www.nseindia.com/'}:
         return ''
     try:
@@ -201,6 +236,11 @@ def page_text(url, session):
             return soup.get_text(' ', strip=True)
         return r.text
     except Exception:
+        if browser is not None:
+            text = browser.fetch_text(url)
+            if text:
+                soup = BeautifulSoup(text, 'html.parser')
+                return soup.get_text(' ', strip=True)
         return ''
 
 
@@ -215,8 +255,8 @@ def extract_number_after(text, labels):
     return None
 
 
-def extract_xbrl(url, session):
-    text = page_text(url, session)
+def extract_xbrl(url, session, browser=None):
+    text = page_text(url, session, browser)
     if not text:
         return None, None, None
     revenue = extract_number_after(text, ['Revenue from operations'])
@@ -249,7 +289,7 @@ def is_non_consolidated(value):
     return 'non-consolidated' in s or 'standalone' in s or 'non consolidated' in s
 
 
-def normalize(payload, symbol, session, source):
+def normalize(payload, symbol, session, source, browser=None):
     out = []
     for row in metadata_rows(payload):
         if not isinstance(row, dict):
@@ -286,7 +326,7 @@ def normalize(payload, symbol, session, source):
 
     rows = []
     for meta in chosen:
-        revenue, pat, eps = extract_xbrl(meta['xbrl'], session)
+        revenue, pat, eps = extract_xbrl(meta['xbrl'], session, browser)
         if revenue is None and pat is None and eps is None:
             continue
         meta.update({
@@ -316,10 +356,10 @@ def main():
         for i, symbol in enumerate(symbols, 1):
             path = OUT / f'{symbol}.csv'
             try:
-                rows = normalize(get_metadata(browser, symbol), symbol, session, 'financial-results')
+                rows = normalize(get_metadata(browser, symbol), symbol, session, 'financial-results', browser)
                 try:
                     integrated = get_integrated_metadata(browser, symbol)
-                    rows += normalize(integrated, symbol, session, 'integrated-financials')
+                    rows += normalize(integrated, symbol, session, 'integrated-financials', browser)
                 except Exception as e:
                     print(f'{symbol}: integrated API warning: {e}')
 
