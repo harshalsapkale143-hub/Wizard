@@ -135,7 +135,38 @@ jobs:
         if: steps.data.outputs.ready == 'true'
         continue-on-error: true
         shell: bash
-        run: /usr/bin/time -f 'FUNDAMENTALS_SECONDS=%e' python scripts/build_historical_fundamentals.py
+        run: |
+          cp metadata/universe_symbols.csv /tmp/fundamental_candidate_universe.csv
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+
+          meta_path = Path('metadata/universe_symbols.csv')
+          meta = pd.read_csv(meta_path)
+          symbol_col = next(c for c in meta.columns if c.lower() in {'symbol','symbols','ticker'})
+          symbols = meta[symbol_col].dropna().astype(str).str.replace('.NS','',regex=False).str.strip()
+          cached = set()
+          required = {'period_end','filing_date','eps','revenue','pat'}
+          for symbol in symbols:
+              path = Path('fundamentals') / f'{symbol}.csv'
+              if not path.exists():
+                  continue
+              try:
+                  df = pd.read_csv(path)
+                  if len(df) >= 5 and required.issubset(df.columns):
+                      cached.add(symbol)
+              except Exception:
+                  pass
+          missing = sorted(set(symbols) - cached)
+          meta[meta[symbol_col].astype(str).str.replace('.NS','',regex=False).isin(missing)].to_csv(meta_path, index=False)
+          Path('metadata/fundamental_missing_symbols.txt').write_text('\n'.join(missing) + ('\n' if missing else ''))
+          print(f'Fundamentals cache: {len(cached)} reusable, {len(missing)} need acquisition, total candidates={len(set(symbols))}')
+          PY
+          if [ -s metadata/fundamental_missing_symbols.txt ]; then
+            /usr/bin/time -f 'FUNDAMENTALS_SECONDS=%e' python scripts/build_historical_fundamentals.py
+          else
+            echo 'All compact fundamental candidates already have usable cached data; skipping NSE acquisition.'
+          fi
       - name: Save refreshed historical fundamentals cache
         if: always() && steps.data.outputs.ready == 'true'
         uses: actions/cache/save@v4
