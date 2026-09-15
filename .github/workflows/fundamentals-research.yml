@@ -1,0 +1,54 @@
+name: Fundamentals Research
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fundamentals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests beautifulsoup4 playwright
+      - name: Install browser runtime
+        run: python -m playwright install --with-deps chromium
+      - name: Restore fundamentals cache
+        uses: actions/cache/restore@v4
+        with:
+          path: fundamentals
+          key: wizard-fundamentals-v1-${{ hashFiles('metadata/universe_symbols.csv') }}
+          restore-keys: |
+            wizard-fundamentals-v1-
+      - name: Build point-in-time fundamentals
+        timeout-minutes: 50
+        run: python scripts/build_historical_fundamentals.py
+      - name: Save fundamentals cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: fundamentals
+          key: wizard-fundamentals-v1-${{ hashFiles('metadata/universe_symbols.csv') }}-${{ github.run_id }}
+      - name: Run fundamental SEPA research
+        if: success()
+        run: python fundamental_sepa_experiment.py
+      - name: Run EPS growth and acceleration experiment
+        if: success()
+        run: python fundamental_eps_experiment.py
+      - name: Upload fundamentals results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: wizard-fundamentals-research
+          path: |
+            fundamentals/
+            results/
+            metadata/
+          if-no-files-found: warn
