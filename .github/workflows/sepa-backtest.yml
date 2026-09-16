@@ -90,6 +90,9 @@ jobs:
       - name: Run exit-management and 30-50% profit-target experiment
         if: steps.data.outputs.ready == 'true'
         run: /usr/bin/time -f 'EXIT_EXPERIMENT_SECONDS=%e' python exit_management_experiment.py
+      - name: Run winner-preservation exit experiment
+        if: steps.data.outputs.ready == 'true'
+        run: /usr/bin/time -f 'WINNER_PRESERVATION_SECONDS=%e' python winner_preservation_experiment.py
       - name: Run young/small-cap experiment
         if: steps.data.outputs.ready == 'true'
         run: /usr/bin/time -f 'SMALL_CAP_EXPERIMENT_SECONDS=%e' python young_small_cap_experiment.py
