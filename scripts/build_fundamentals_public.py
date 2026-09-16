@@ -1,36 +1,74 @@
 from __future__ import annotations
-import os, time, requests, pandas as pd
+
+import json
+import os
+import time
 from pathlib import Path
 
-# Public-provider proof of concept. Uses BharatStock only when API key is supplied;
-# otherwise uses its public endpoint pattern and records provider errors.
-BASE="https://bharatstockapi.com/v1/stocks/{symbol}"
-OUT=Path("fundamentals_public")
-MAX_SYMBOLS=int(os.environ.get("FUNDAMENTALS_MAX_SYMBOLS","10"))
+import pandas as pd
+import requests
+
+BASE = "https://bharatstockapi.com/v1/stocks/{symbol}"
+OUT = Path("fundamentals_public")
+MAX_SYMBOLS = int(os.environ.get("FUNDAMENTALS_MAX_SYMBOLS", "10"))
+DAILY_LIMIT = int(os.environ.get("BHARATSTOCK_DAILY_LIMIT", "40"))
+SLEEP_SECONDS = float(os.environ.get("BHARATSTOCK_SLEEP_SECONDS", "1.0"))
+
 
 def main():
-    meta=pd.read_csv("metadata/universe_symbols.csv")
-    scol=next(c for c in meta.columns if c.lower() in {"symbol","ticker","symbols"})
-    key=os.environ.get("BHARATSTOCK_API_KEY","").strip()
-    headers={"Accept":"application/json"}
-    if key: headers["X-API-Key"]=key
-    OUT.mkdir(parents=True,exist_ok=True)
-    ok=0
-    for _,row in meta.head(MAX_SYMBOLS).iterrows():
-        sym=str(row[scol]).replace(".NS","").strip()
-        try:
-            r=requests.get(BASE.format(symbol=sym),headers=headers,timeout=15)
-            if r.ok:
-                data=r.json()
-                (OUT/f"{sym}.json").write_text(pd.io.json.dumps(data) if hasattr(pd.io.json,"dumps") else __import__("json").dumps(data))
-                ok+=1
-            else:
-                print(f"{sym}: provider HTTP {r.status_code}")
-        except Exception as e:
-            print(f"{sym}: {type(e).__name__}: {e}")
-        time.sleep(.2)
-    print(f"Public-provider files: {ok}/{min(len(meta),MAX_SYMBOLS)}")
-    if ok==0:
-        raise SystemExit("Public provider returned no usable data; configure BHARATSTOCK_API_KEY or choose another permitted provider.")
+    meta = pd.read_csv("metadata/universe_symbols.csv")
+    scol = next(c for c in meta.columns if c.lower() in {"symbol", "ticker", "symbols"})
+    key = os.environ.get("BHARATSTOCK_API_KEY", "").strip()
+    if not key:
+        raise SystemExit("BHARATSTOCK_API_KEY secret is missing.")
 
-if __name__=="__main__": main()
+    OUT.mkdir(parents=True, exist_ok=True)
+    headers = {
+        "Accept": "application/json",
+        "X-API-Key": key,
+        "User-Agent": "Wizard-fundamentals/1.0",
+    }
+
+    target = meta.dropna(subset=[scol]).head(min(MAX_SYMBOLS, DAILY_LIMIT))
+    ok = 0
+    auth_failed = False
+
+    for _, row in target.iterrows():
+        symbol = str(row[scol]).replace(".NS", "").strip()
+        try:
+            response = requests.get(
+                BASE.format(symbol=symbol),
+                headers=headers,
+                timeout=20,
+            )
+            if response.status_code == 200:
+                payload = response.json()
+                (OUT / f"{symbol}.json").write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2)
+                )
+                ok += 1
+                print(f"{symbol}: OK")
+            elif response.status_code in {401, 403}:
+                auth_failed = True
+                print(f"{symbol}: authentication/permission HTTP {response.status_code}")
+                break
+            elif response.status_code == 429:
+                print(f"{symbol}: rate limited (429); stopping seed run")
+                break
+            else:
+                print(f"{symbol}: provider HTTP {response.status_code}")
+        except requests.RequestException as exc:
+            print(f"{symbol}: request error {type(exc).__name__}: {exc}")
+        time.sleep(SLEEP_SECONDS)
+
+    print(f"BharatStock usable files: {ok}/{len(target)}")
+    if auth_failed:
+        raise SystemExit(
+            "BharatStock rejected the API key. Verify the secret value and API-plan access."
+        )
+    if ok == 0:
+        raise SystemExit("BharatStock returned no usable data for the seed universe.")
+
+
+if __name__ == "__main__":
+    main()
