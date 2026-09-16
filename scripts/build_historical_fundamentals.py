@@ -244,6 +244,13 @@ def page_text(url, session, browser=None):
         return ''
 
 
+def valid_xbrl_url(url):
+    if not url:
+        return False
+    s = str(url).strip()
+    return bool(s) and s not in {'-', '_', '—'} and not s.endswith('nseindia.com/') and '/corporate/xbrl/' in s
+
+
 def extract_number_after(text, labels):
     for label in labels:
         m = re.search(re.escape(label) + r'(.{0,260}?)', text, flags=re.I)
@@ -308,7 +315,7 @@ def normalize(payload, symbol, session, source, browser=None):
         if is_cumulative(meta['cumulative']):
             continue
         xbrl = str(meta.get('xbrl') or '').strip()
-        if not xbrl or xbrl in {'-', '_', '—'} or xbrl.endswith('nseindia.com/'):
+        if not valid_xbrl_url(xbrl):
             continue
         out.append(meta)
 
@@ -373,8 +380,10 @@ def main():
     ok = 0
     diagnostics = []
     api_failures = 0
+    max_symbols = int(__import__('os').environ.get('FUNDAMENTALS_MAX_SYMBOLS', '100'))
+    max_filings = int(__import__('os').environ.get('FUNDAMENTALS_MAX_FILINGS', '8'))
     try:
-        for i, symbol in enumerate(symbols, 1):
+        for i, symbol in enumerate(symbols[:max_symbols], 1):
             path = OUT / f'{symbol}.csv'
             try:
                 if path.exists():
@@ -405,6 +414,8 @@ def main():
 
                 if rows:
                     df = pd.DataFrame(rows)
+                    if len(df) > max_filings:
+                        df = df.sort_values(['filing_date','period_end']).tail(max_filings)
                     df = df.drop_duplicates(['period_end', 'filing_date', 'consolidated', 'cumulative', 'source']).sort_values(['filing_date', 'period_end'])
                     df.to_csv(path, index=False)
                     ok += 1
@@ -430,8 +441,9 @@ def main():
 
     if diagnostics:
         pd.DataFrame(diagnostics).to_csv(OUT / '_build_diagnostics.csv', index=False)
-    print(f'Historical fundamentals complete: {ok}/{len(symbols)} symbols with usable NSE filings')
-    print(f'NSE catalog/API failures: {api_failures}/{len(symbols)}')
+    attempted = min(len(symbols), max_symbols)
+    print(f'Historical fundamentals complete: {ok}/{attempted} symbols with usable NSE filings')
+    print(f'NSE catalog/API failures: {api_failures}/{attempted}')
     if ok == 0:
         raise SystemExit('No usable point-in-time NSE fundamental filings were produced.')
 
