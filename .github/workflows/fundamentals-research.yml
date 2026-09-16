@@ -20,10 +20,15 @@ jobs:
           pip install pandas numpy yfinance requests beautifulsoup4 openpyxl xlrd playwright
       - name: Download NSE metadata sources
         run: python scripts/download_nse_metadata_sources.py
-      - name: Use existing point-in-time metadata
+      - name: Build point-in-time metadata
+        env:
+          METADATA_SOURCE_DIR: metadata_sources
+          LISTING_SOURCE_FILE: metadata_sources/listing_dates.csv
+        run: python scripts/build_historical_metadata.py
+      - name: Verify point-in-time metadata
         shell: bash
         run: |
-          test -s metadata/universe_symbols.csv || { echo 'metadata/universe_symbols.csv missing'; exit 1; }
+          test -s metadata/universe_symbols.csv || { echo 'metadata/universe_symbols.csv missing after metadata build'; exit 1; }
       - name: Select technical candidates when results are available
         shell: bash
         run: |
