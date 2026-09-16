@@ -72,6 +72,9 @@ jobs:
       - name: Classify 700-stock historical winners and losers
         if: steps.data.outputs.ready == 'true'
         run: /usr/bin/time -f 'WINNER_LOSER_CLASSIFICATION_SECONDS=%e' python scripts/classify_stock_winners_losers.py
+      - name: Run leakage-safe winner-loser feature study
+        if: steps.data.outputs.ready == 'true'
+        run: /usr/bin/time -f 'WINNER_LOSER_FEATURE_SECONDS=%e' python scripts/winner_loser_feature_study.py
       - name: Run robustness and out-of-sample analysis
         if: steps.data.outputs.ready == 'true'
         run: /usr/bin/time -f 'ROBUSTNESS_SECONDS=%e' python robustness_backtest.py
@@ -84,7 +87,7 @@ jobs:
       - name: Run trade-level diagnostics
         if: steps.data.outputs.ready == 'true'
         run: /usr/bin/time -f 'TRADE_DIAGNOSTICS_SECONDS=%e' python trade_diagnostics.py
-      - name: Run exit-management experiment
+      - name: Run exit-management and 30-50% profit-target experiment
         if: steps.data.outputs.ready == 'true'
         run: /usr/bin/time -f 'EXIT_EXPERIMENT_SECONDS=%e' python exit_management_experiment.py
       - name: Run young/small-cap experiment
