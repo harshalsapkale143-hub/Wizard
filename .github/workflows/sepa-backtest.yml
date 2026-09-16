@@ -66,6 +66,9 @@ jobs:
           if len(valid)<100: raise SystemExit(f'Need at least 100 historical stock datasets, found {len(valid)}')
           PY
           echo 'ready=true' >> "$GITHUB_OUTPUT"
+      - name: Classify 700-stock historical winners and losers
+        if: steps.data.outputs.ready == 'true'
+        run: /usr/bin/time -f 'WINNER_LOSER_CLASSIFICATION_SECONDS=%e' python scripts/classify_stock_winners_losers.py
       - name: Run daily SEPA/VCP backtest
         if: steps.data.outputs.ready == 'true'
         run: /usr/bin/time -f 'DAILY_BACKTEST_SECONDS=%e' python daily_sepa_backtest.py --data-dir data --market NIFTY50.csv --output results
