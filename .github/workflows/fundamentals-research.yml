@@ -63,8 +63,11 @@ jobs:
           key: wizard-fundamentals-v2-${{ hashFiles('metadata/fundamental_candidate_symbols.txt') }}
           restore-keys: |
             wizard-fundamentals-v2-
-      - name: Build point-in-time fundamentals
-        timeout-minutes: 35
+      - name: Build point-in-time fundamentals sample
+        timeout-minutes: 15
+        env:
+          FUNDAMENTALS_MAX_SYMBOLS: '10'
+          FUNDAMENTALS_MAX_FILINGS: '8'
         run: |
           /usr/bin/time -f 'FUNDAMENTALS_SECONDS=%e' python scripts/build_historical_fundamentals.py
       - name: Save fundamentals cache
