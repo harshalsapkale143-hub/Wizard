@@ -54,8 +54,11 @@ jobs:
           universe.to_csv('metadata/universe_symbols.csv',index=False)
           print(f'Fundamental universe: {len(universe)} symbols')
           PY
-      - name: Install browser runtime
-        run: python -m playwright install --with-deps chromium
+      - name: Acquire fundamentals from Upstox
+        env:
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+          FUNDAMENTALS_MAX_SYMBOLS: '25'
+        run: python scripts/build_fundamentals_upstox.py
       - name: Restore fundamentals cache
         uses: actions/cache/restore@v4
         with:
@@ -63,36 +66,19 @@ jobs:
           key: wizard-fundamentals-v2-${{ hashFiles('metadata/fundamental_candidate_symbols.txt') }}
           restore-keys: |
             wizard-fundamentals-v2-
-      - name: Build point-in-time fundamentals sample
-        timeout-minutes: 15
-        env:
-          FUNDAMENTALS_MAX_SYMBOLS: '10'
-          FUNDAMENTALS_MAX_FILINGS: '8'
-        run: |
-          /usr/bin/time -f 'FUNDAMENTALS_SECONDS=%e' python scripts/build_historical_fundamentals.py
       - name: Save fundamentals cache
         if: always()
         uses: actions/cache/save@v4
         with:
           path: fundamentals
           key: wizard-fundamentals-v2-${{ hashFiles('metadata/fundamental_candidate_symbols.txt') }}-${{ github.run_id }}
-      - name: Validate fundamentals coverage
+      - name: Validate Upstox fundamentals coverage
         run: |
           python - <<'PY'
           from pathlib import Path
-          import pandas as pd
-          files=[p for p in Path('fundamentals').glob('*.csv') if p.name != '_build_diagnostics.csv']
-          usable=[]
-          for p in files:
-              try:
-                  d=pd.read_csv(p)
-                  if {'period_end','filing_date','eps','revenue','pat'}.issubset(d.columns) and len(d)>=5:
-                      usable.append(p)
-              except Exception:
-                  pass
-          print(f'Usable fundamentals files: {len(usable)}')
-          if not usable:
-              raise SystemExit('No usable point-in-time fundamentals files were produced.')
+          files=list(Path('fundamentals_upstox').glob('*.csv'))
+          print(f'Upstox fundamentals files: {len(files)}')
+          if not files: raise SystemExit('No Upstox fundamentals were produced.')
           PY
       - name: Run fundamental SEPA research
         run: python fundamental_sepa_experiment.py
