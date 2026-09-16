@@ -6,7 +6,7 @@ on:
 jobs:
   fundamentals:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -25,39 +25,71 @@ jobs:
           METADATA_SOURCE_DIR: metadata_sources
           LISTING_SOURCE_FILE: metadata_sources/listing_dates.csv
         run: python scripts/build_historical_metadata.py
+      - name: Select technical candidates when results are available
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          universe = pd.read_csv('metadata/universe_symbols.csv')
+          symbol_col = next(c for c in universe.columns if c.lower() in {'symbol','symbols','ticker'})
+          candidates=set()
+          for p in Path('results').glob('*trades.csv'):
+              try:
+                  d=pd.read_csv(p)
+              except Exception:
+                  continue
+              for c in d.columns:
+                  if c.lower() in {'symbol','ticker'}:
+                      candidates.update(d[c].dropna().astype(str).str.replace('.NS','',regex=False).str.strip())
+          if candidates:
+              compact=universe[universe[symbol_col].astype(str).str.replace('.NS','',regex=False).str.strip().isin(candidates)]
+              if len(compact) >= 10:
+                  universe=compact
+          Path('metadata/fundamental_candidate_symbols.txt').write_text('\n'.join(sorted(set(universe[symbol_col].dropna().astype(str).str.replace('.NS','',regex=False).str.strip())))+'\n')
+          universe.to_csv('metadata/universe_symbols.csv',index=False)
+          print(f'Fundamental universe: {len(universe)} symbols')
+          PY
       - name: Install browser runtime
         run: python -m playwright install --with-deps chromium
       - name: Restore fundamentals cache
         uses: actions/cache/restore@v4
         with:
           path: fundamentals
-          key: wizard-fundamentals-v1-${{ hashFiles('metadata/universe_symbols.csv') }}
+          key: wizard-fundamentals-v2-${{ hashFiles('metadata/fundamental_candidate_symbols.txt') }}
           restore-keys: |
-            wizard-fundamentals-v1-
+            wizard-fundamentals-v2-
       - name: Build point-in-time fundamentals
-        timeout-minutes: 50
+        timeout-minutes: 35
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          import pandas as pd
-          meta = pd.read_csv('metadata/universe_symbols.csv')
-          symbol_col = next(c for c in meta.columns if c.lower() in {'symbol','symbols','ticker'})
-          symbols = sorted(set(meta[symbol_col].dropna().astype(str).str.replace('.NS','',regex=False).str.strip()))
-          Path('metadata/fundamental_candidate_symbols.txt').write_text('\n'.join(symbols) + ('\n' if symbols else ''))
-          print(f'Fundamental universe: {len(symbols)} symbols')
-          PY
           /usr/bin/time -f 'FUNDAMENTALS_SECONDS=%e' python scripts/build_historical_fundamentals.py
       - name: Save fundamentals cache
         if: always()
         uses: actions/cache/save@v4
         with:
           path: fundamentals
-          key: wizard-fundamentals-v1-${{ hashFiles('metadata/universe_symbols.csv') }}-${{ github.run_id }}
+          key: wizard-fundamentals-v2-${{ hashFiles('metadata/fundamental_candidate_symbols.txt') }}-${{ github.run_id }}
+      - name: Validate fundamentals coverage
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          files=[p for p in Path('fundamentals').glob('*.csv') if p.name != '_build_diagnostics.csv']
+          usable=[]
+          for p in files:
+              try:
+                  d=pd.read_csv(p)
+                  if {'period_end','filing_date','eps','revenue','pat'}.issubset(d.columns) and len(d)>=5:
+                      usable.append(p)
+              except Exception:
+                  pass
+          print(f'Usable fundamentals files: {len(usable)}')
+          if not usable:
+              raise SystemExit('No usable point-in-time fundamentals files were produced.')
+          PY
       - name: Run fundamental SEPA research
-        if: success()
         run: python fundamental_sepa_experiment.py
       - name: Run EPS growth and acceleration experiment
-        if: success()
         run: python fundamental_eps_experiment.py
       - name: Upload fundamentals results
         if: always()
