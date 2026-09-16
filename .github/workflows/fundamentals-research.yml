@@ -2,6 +2,12 @@ name: Fundamentals Research
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/fundamentals-research.yml'
+      - 'scripts/build_fundamentals_public.py'
+      - 'fundamental_sepa_experiment.py'
+      - 'fundamental_eps_experiment.py'
 
 jobs:
   fundamentals:
