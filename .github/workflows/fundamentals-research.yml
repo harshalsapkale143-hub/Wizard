@@ -54,11 +54,9 @@ jobs:
           universe.to_csv('metadata/universe_symbols.csv',index=False)
           print(f'Fundamental universe: {len(universe)} symbols')
           PY
-      - name: Acquire fundamentals from Upstox
-        env:
-          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
-          FUNDAMENTALS_MAX_SYMBOLS: '25'
-        run: python scripts/build_fundamentals_upstox.py
+      - name: Build fundamentals from public provider
+        run: |
+          python scripts/build_fundamentals_public.py
       - name: Restore fundamentals cache
         uses: actions/cache/restore@v4
         with:
