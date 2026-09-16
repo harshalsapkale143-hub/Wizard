@@ -54,41 +54,35 @@ jobs:
           universe.to_csv('metadata/universe_symbols.csv',index=False)
           print(f'Fundamental universe: {len(universe)} symbols')
           PY
-      - name: Build fundamentals from public provider
+      - name: Build BharatStock fundamentals seed
+        env:
+          BHARATSTOCK_API_KEY: ${{ secrets.BHARATSTOCK_API_KEY }}
+          FUNDAMENTALS_MAX_SYMBOLS: '10'
+          BHARATSTOCK_DAILY_LIMIT: '40'
+          BHARATSTOCK_SLEEP_SECONDS: '1.0'
         run: |
           python scripts/build_fundamentals_public.py
-      - name: Restore fundamentals cache
-        uses: actions/cache/restore@v4
-        with:
-          path: fundamentals
-          key: wizard-fundamentals-v2-${{ hashFiles('metadata/fundamental_candidate_symbols.txt') }}
-          restore-keys: |
-            wizard-fundamentals-v2-
-      - name: Save fundamentals cache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: fundamentals
-          key: wizard-fundamentals-v2-${{ hashFiles('metadata/fundamental_candidate_symbols.txt') }}-${{ github.run_id }}
-      - name: Validate Upstox fundamentals coverage
+      - name: Validate BharatStock financial seed
         run: |
           python - <<'PY'
           from pathlib import Path
-          files=list(Path('fundamentals_upstox').glob('*.csv'))
-          print(f'Upstox fundamentals files: {len(files)}')
-          if not files: raise SystemExit('No Upstox fundamentals were produced.')
+          import json
+          files=list(Path('fundamentals_public').glob('*.json'))
+          print(f'BharatStock financial files: {len(files)}')
+          for p in files:
+              d=json.loads(p.read_text())
+              rows=d.get('data', [])
+              print(f'{p.stem}: {len(rows)} rows')
+          if not files:
+              raise SystemExit('No BharatStock financial files were produced.')
           PY
-      - name: Run fundamental SEPA research
-        run: python fundamental_sepa_experiment.py
-      - name: Run EPS growth and acceleration experiment
-        run: python fundamental_eps_experiment.py
       - name: Upload fundamentals results
         if: always()
         uses: actions/upload-artifact@v6
         with:
           name: wizard-fundamentals-research
           path: |
-            fundamentals/
+            fundamentals_public/
             results/
             metadata/
           if-no-files-found: warn
