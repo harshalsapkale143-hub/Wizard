@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/fundamentals-research.yml'
       - 'scripts/build_fundamentals_public.py'
+      - 'scripts/normalize_bharatstock_fundamentals.py'
       - 'fundamental_sepa_experiment.py'
       - 'fundamental_eps_experiment.py'
 
@@ -82,6 +83,21 @@ jobs:
           if not files:
               raise SystemExit('No BharatStock financial files were produced.')
           PY
+      - name: Normalize BharatStock to canonical fundamentals
+        run: python scripts/normalize_bharatstock_fundamentals.py
+      - name: Enforce point-in-time data integrity
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          m=json.loads(Path('fundamentals_bharatstock_canonical/manifest.json').read_text())
+          print(json.dumps(m, indent=2))
+          if m['canonical_rows'] == 0:
+              raise SystemExit('No canonical fundamentals were produced.')
+          if m['point_in_time_eligible']:
+              raise SystemExit('Unexpected point-in-time eligibility flag.')
+          print('PASS: BharatStock seed is normalized, but not admitted to point-in-time backtests without filing dates.')
+          PY
       - name: Upload fundamentals results
         if: always()
         uses: actions/upload-artifact@v6
@@ -89,6 +105,7 @@ jobs:
           name: wizard-fundamentals-research
           path: |
             fundamentals_public/
+            fundamentals_bharatstock_canonical/
             results/
             metadata/
           if-no-files-found: warn
