@@ -1,0 +1,1 @@
+Structural exit research is next: compare 50-DMA baseline with partial-profit + trailing exits, breakeven-at-2R, and delayed-50DMA logic across the existing four windows/config grid. Do not select based on aggregate return alone; require consistency across windows and report drawdown and realized-R distribution.
