@@ -96,6 +96,9 @@ jobs:
       - name: Run fine-grid post-2R winner exit experiment
         if: steps.data.outputs.ready == 'true'
         run: /usr/bin/time -f 'WINNER_PRESERVATION_FINE_GRID_SECONDS=%e' python winner_preservation_fine_grid_experiment.py
+      - name: Run structural exit experiment
+        if: steps.data.outputs.ready == 'true'
+        run: /usr/bin/time -f 'EXIT_STRUCTURAL_SECONDS=%e' python exit_structural_experiment.py
       - name: Run young/small-cap experiment
         if: steps.data.outputs.ready == 'true'
         run: /usr/bin/time -f 'SMALL_CAP_EXPERIMENT_SECONDS=%e' python young_small_cap_experiment.py
