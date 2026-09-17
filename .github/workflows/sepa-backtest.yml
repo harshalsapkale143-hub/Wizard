@@ -99,6 +99,9 @@ jobs:
       - name: Run structural exit experiment
         if: steps.data.outputs.ready == 'true'
         run: /usr/bin/time -f 'EXIT_STRUCTURAL_SECONDS=%e' python exit_structural_experiment.py
+      - name: Run delayed 50-DMA threshold grid experiment
+        if: steps.data.outputs.ready == 'true'
+        run: /usr/bin/time -f 'DELAYED_50DMA_THRESHOLD_GRID_SECONDS=%e' python delayed_50dma_threshold_grid.py
       - name: Run young/small-cap experiment
         if: steps.data.outputs.ready == 'true'
         run: /usr/bin/time -f 'SMALL_CAP_EXPERIMENT_SECONDS=%e' python young_small_cap_experiment.py
