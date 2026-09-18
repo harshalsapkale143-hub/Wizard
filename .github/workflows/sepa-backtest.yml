@@ -33,81 +33,37 @@ jobs:
           METADATA_SOURCE_DIR: metadata_sources
           LISTING_SOURCE_FILE: metadata_sources/listing_dates.csv
         run: python scripts/build_historical_metadata.py
-      - name: Restore historical market-data cache
-        uses: actions/cache/restore@v4
-        with:
-          path: data
-          key: sepa-research-data-${{ hashFiles('metadata/universe_symbols.csv') }}-${{ github.run_id }}
-          restore-keys: |
-            sepa-research-data-${{ hashFiles('metadata/universe_symbols.csv') }}-
       - name: Download and build historical research universe
         run: /usr/bin/time -f 'MARKET_DATA_SECONDS=%e' python scripts/build_nifty50_daily.py
-      - name: Save refreshed historical market-data cache
-        uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: data
-          key: sepa-research-data-${{ hashFiles('metadata/universe_symbols.csv') }}-${{ github.run_id }}
       - name: Validate daily market data
         id: data
         shell: bash
         run: |
-          test -s data/NIFTY50.csv || { echo 'NIFTY50 index data is missing.' >> "$GITHUB_STEP_SUMMARY"; exit 1; }
+          test -s data/NIFTY50.csv
           python - <<'PY'
           from pathlib import Path
           import pandas as pd
           required={'timestamp','open','high','low','close','volume'}
-          files=list(Path('data').glob('*.csv'))
           valid=[]
-          for f in files:
+          for f in Path('data').glob('*.csv'):
               d=pd.read_csv(f)
-              if required.issubset(d.columns) and len(d)>=250: valid.append((f.name,len(d)))
-          print('Valid datasets:', len(valid))
-          if len(valid)<100: raise SystemExit(f'Need at least 100 historical stock datasets, found {len(valid)}')
+              if required.issubset(d.columns) and len(d)>=250: valid.append(f)
+          print('Valid datasets:',len(valid))
+          if len(valid)<100: raise SystemExit('Need at least 100 historical stock datasets')
           PY
           echo 'ready=true' >> "$GITHUB_OUTPUT"
       - name: Run daily SEPA/VCP backtest
         if: steps.data.outputs.ready == 'true'
-        run: /usr/bin/time -f 'DAILY_BACKTEST_SECONDS=%e' python daily_sepa_backtest.py --data-dir data --market NIFTY50.csv --output results
-      - name: Classify 700-stock historical winners and losers
+        run: python daily_sepa_backtest.py --data-dir data --market NIFTY50.csv --output results
+      - name: Run winner/loser classification
         if: steps.data.outputs.ready == 'true'
-        run: /usr/bin/time -f 'WINNER_LOSER_CLASSIFICATION_SECONDS=%e' python scripts/classify_stock_winners_losers.py
+        run: python scripts/classify_stock_winners_losers.py
       - name: Run leakage-safe winner-loser feature study
         if: steps.data.outputs.ready == 'true'
-        run: /usr/bin/time -f 'WINNER_LOSER_FEATURE_SECONDS=%e' python scripts/winner_loser_feature_study.py
-      - name: Run robustness and out-of-sample analysis
+        run: python scripts/winner_loser_feature_study.py
+      - name: Run entry-quality experiment with 1.5R delayed 50-DMA exit
         if: steps.data.outputs.ready == 'true'
-        run: /usr/bin/time -f 'ROBUSTNESS_SECONDS=%e' python robustness_backtest.py
-      - name: Run yearly and market-regime analysis
-        if: steps.data.outputs.ready == 'true'
-        run: /usr/bin/time -f 'YEARLY_REGIME_SECONDS=%e' python yearly_regime_analysis.py
-      - name: Run walk-forward OOS validation
-        if: steps.data.outputs.ready == 'true'
-        run: /usr/bin/time -f 'WALK_FORWARD_SECONDS=%e' python walk_forward_analysis.py
-      - name: Run trade-level diagnostics
-        if: steps.data.outputs.ready == 'true'
-        run: /usr/bin/time -f 'TRADE_DIAGNOSTICS_SECONDS=%e' python trade_diagnostics.py
-      - name: Run exit-management and 30-50% profit-target experiment
-        if: steps.data.outputs.ready == 'true'
-        run: /usr/bin/time -f 'EXIT_EXPERIMENT_SECONDS=%e' python exit_management_experiment.py
-      - name: Run winner-preservation exit experiment
-        if: steps.data.outputs.ready == 'true'
-        run: /usr/bin/time -f 'WINNER_PRESERVATION_SECONDS=%e' python winner_preservation_experiment.py
-      - name: Run fine-grid post-2R winner exit experiment
-        if: steps.data.outputs.ready == 'true'
-        run: /usr/bin/time -f 'WINNER_PRESERVATION_FINE_GRID_SECONDS=%e' python winner_preservation_fine_grid_experiment.py
-      - name: Run structural exit experiment
-        if: steps.data.outputs.ready == 'true'
-        run: /usr/bin/time -f 'EXIT_STRUCTURAL_SECONDS=%e' python exit_structural_experiment.py
-      - name: Run delayed 50-DMA threshold grid experiment
-        if: steps.data.outputs.ready == 'true'
-        run: /usr/bin/time -f 'DELAYED_50DMA_THRESHOLD_GRID_SECONDS=%e' python delayed_50dma_threshold_grid.py
-      - name: Run young/small-cap experiment
-        if: steps.data.outputs.ready == 'true'
-        run: /usr/bin/time -f 'SMALL_CAP_EXPERIMENT_SECONDS=%e' python young_small_cap_experiment.py
-      - name: Run CAN SLIM technical overlay experiment
-        if: steps.data.outputs.ready == 'true'
-        run: /usr/bin/time -f 'CANSLIM_EXPERIMENT_SECONDS=%e' python canslim_overlay_experiment.py
+        run: python entry_quality_1p5r_experiment.py
       - name: Upload technical backtest results
         if: always() && steps.data.outputs.ready == 'true'
         uses: actions/upload-artifact@v6
