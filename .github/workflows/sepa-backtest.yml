@@ -69,7 +69,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/intraday5m
-          key: sepa-intraday5m-2025-04-01-to-2026-03-31-v1-${{ runner.os }}
+          key: sepa-intraday5m-2026-07-10-to-2026-09-08-v2-${{ runner.os }}
 
       - name: Download 5-minute breakout data
         if: steps.data.outputs.ready == 'true'
