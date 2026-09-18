@@ -3,9 +3,9 @@ from pathlib import Path
 import pandas as pd
 from openchart import NSEData
 
-START = datetime(2024, 1, 1)
+START = datetime(2025, 4, 1)
 END = datetime(2026, 3, 31)
-OUT = Path("data")
+OUT = Path("data/intraday5m")
 OUT.mkdir(exist_ok=True)
 
 symbols = [x.strip() for x in Path("symbols.txt").read_text().splitlines() if x.strip() and not x.startswith("#")]
