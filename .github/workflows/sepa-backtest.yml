@@ -5,7 +5,6 @@ on:
   schedule:
     - cron: '30 3 * * *'
 
-# The full research suite is intentionally not run on every code push.
 concurrency:
   group: sepa-backtest
   cancel-in-progress: true
@@ -37,6 +36,12 @@ jobs:
           LISTING_SOURCE_FILE: metadata_sources/listing_dates.csv
         run: python scripts/build_historical_metadata.py
 
+      - name: Restore daily market-data cache
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: sepa-daily-data-OS-2026-09-08-v1-${{ runner.os }}
+
       - name: Download and build historical research universe
         run: /usr/bin/time -f 'MARKET_DATA_SECONDS=%e' python scripts/build_nifty50_daily.py
 
@@ -60,12 +65,16 @@ jobs:
           PY
           echo 'ready=true' >> "$GITHUB_OUTPUT"
 
+      - name: Restore 5-minute market-data cache
+        uses: actions/cache@v4
+        with:
+          path: data/intraday5m
+          key: sepa-intraday5m-2025-04-01-to-2026-03-31-v1-${{ runner.os }}
+
       - name: Download 5-minute breakout data
         if: steps.data.outputs.ready == 'true'
         run: python download_nse_5m_openchart.py
 
-      # Fast production-oriented checks only.
-      # Heavy research experiments are intentionally NOT part of this workflow.
       - name: Run intraday exact-breakout backtest
         if: steps.data.outputs.ready == 'true'
         run: python intraday_breakout_backtest.py --data-dir data --intraday-dir data/intraday5m --market NIFTY50.csv --output results_intraday
