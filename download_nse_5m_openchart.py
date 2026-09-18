@@ -3,8 +3,9 @@ from pathlib import Path
 import pandas as pd
 from openchart import NSEData
 
-START = datetime(2025, 4, 1)
-END = datetime(2026, 3, 31)
+START = datetime(2026, 7, 10)
+END = datetime(2026, 9, 8)
+CHUNK_DAYS = 7
 OUT = Path("data/intraday5m")
 OUT.mkdir(exist_ok=True)
 
@@ -24,11 +25,10 @@ for symbol in symbols:
             pass
     print("Downloading", symbol)
     try:
-        df = nse.historical(symbol, "EQ", START, END, "5m")
+        df = pd.concat([x.reset_index() for x in [nse.historical(symbol, "EQ", s, min(s + pd.Timedelta(days=CHUNK_DAYS), END), "5m") for s in pd.date_range(START, END, freq=f"{CHUNK_DAYS}D")] if x is not None and len(x)], ignore_index=True)
         if df is None or len(df) == 0:
             print("  NO DATA")
             continue
-        df = df.reset_index()
         rename = {}
         for c in df.columns:
             lc = str(c).lower()
