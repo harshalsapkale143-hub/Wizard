@@ -52,6 +52,13 @@ jobs:
           if len(valid)<100: raise SystemExit('Need at least 100 historical stock datasets')
           PY
           echo 'ready=true' >> "$GITHUB_OUTPUT"
+      - name: Download 5-minute breakout data
+        run: |
+          pip install openchart
+          python download_nse_5m_openchart.py
+      - name: Run intraday exact-breakout backtest
+        if: steps.data.outputs.ready == 'true'
+        run: python intraday_breakout_backtest.py --data-dir data --intraday-dir data/intraday5m --market NIFTY50.csv --output results_intraday
       - name: Run daily SEPA/VCP backtest
         if: steps.data.outputs.ready == 'true'
         run: python daily_sepa_backtest.py --data-dir data --market NIFTY50.csv --output results
