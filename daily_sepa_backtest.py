@@ -2,9 +2,7 @@
 
 Signals are evaluated using information available at the prior close.
 A confirmed breakout is entered at the following session open, with
-position sizing based on the actual entry price. This avoids the previous
-mismatch where the signal used the breakout-day close while the position
-was entered on the next session.
+position sizing based on the actual entry price.
 """
 from __future__ import annotations
 import argparse
@@ -37,7 +35,7 @@ def trend_template(d):
 
 def vcp_setup(d):
     c, h, l, v = d.close, d.high, d.low, d.volume
-    ma50, ma150, ma200 = c.rolling(50).mean(), c.rolling(150).mean(), c.rolling(200).mean()
+    ma50 = c.rolling(50).mean()
     vol20 = v.rolling(20).mean()
     high60 = h.rolling(60).max()
     near_high = c >= high60 * 0.85
@@ -95,7 +93,17 @@ def backtest(files, market):
     md = load(market)
     md = md.loc[(md.index >= START - pd.Timedelta(days=400)) & (md.index <= END)]
     market_ma200 = md.close.rolling(200).mean()
-    market_ok = (md.close > market_ma200).shift(1).fillna(False)
+    market_ok = (md.close > market_ma200).fillna(False)
+
+    # New-entry regime gate: NIFTY above 200-DMA and at least 40% of
+    # the research universe above its 50-DMA, measured at signal close.
+    breadth_rows = []
+    for f in files:
+        d = load(f)
+        d = d.loc[(d.index >= START - pd.Timedelta(days=400)) & (d.index <= END)]
+        if len(d) >= 50:
+            breadth_rows.append((d.close > d.close.rolling(50).mean()).rename(f.stem))
+    breadth = pd.concat(breadth_rows, axis=1).mean(axis=1) if breadth_rows else pd.Series(dtype=float)
 
     signals = []
     stock_cache = {}
@@ -107,6 +115,12 @@ def backtest(files, market):
             continue
         stock_cache[f.stem] = d
         signals.extend(build_signals(d, md))
+
+    signals = [
+        s for s in signals
+        if bool(market_ok.get(s["signal_date"], False))
+        and float(breadth.get(s["signal_date"], np.nan)) >= 0.40
+    ]
     signals.sort(key=lambda x: (x["entry_date"], x["symbol"]))
 
     cash = INITIAL
@@ -118,9 +132,6 @@ def backtest(files, market):
 
     dates = sorted(set(md.index[(md.index >= START) & (md.index <= END)]))
     for dt in dates:
-        # Existing positions are managed before new entries. Stops are based on
-        # closes in this daily model; the entry day is therefore not treated as
-        # an exit day unless its close breaches the stop/50DMA.
         for sym in list(positions):
             pos = positions[sym]
             d = stock_cache[sym]
