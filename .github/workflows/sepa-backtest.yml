@@ -4,37 +4,42 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '30 3 * * *'
-  push:
-    branches: [ main, master ]
 
+# The full research suite is intentionally not run on every code push.
 concurrency:
-  group: sepa-backtest-${{ github.ref }}
+  group: sepa-backtest
   cancel-in-progress: true
 
 jobs:
   backtest:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy yfinance requests beautifulsoup4 openpyxl xlrd
+          pip install pandas numpy yfinance requests beautifulsoup4 openpyxl xlrd openchart
+
       - name: Download NSE metadata sources
         run: python scripts/download_nse_metadata_sources.py
+
       - name: Build point-in-time metadata
         env:
           METADATA_SOURCE_DIR: metadata_sources
           LISTING_SOURCE_FILE: metadata_sources/listing_dates.csv
         run: python scripts/build_historical_metadata.py
+
       - name: Download and build historical research universe
         run: /usr/bin/time -f 'MARKET_DATA_SECONDS=%e' python scripts/build_nifty50_daily.py
+
       - name: Validate daily market data
         id: data
         shell: bash
@@ -47,40 +52,34 @@ jobs:
           valid=[]
           for f in Path('data').glob('*.csv'):
               d=pd.read_csv(f)
-              if required.issubset(d.columns) and len(d)>=250: valid.append(f)
+              if required.issubset(d.columns) and len(d)>=250:
+                  valid.append(f)
           print('Valid datasets:',len(valid))
-          if len(valid)<100: raise SystemExit('Need at least 100 historical stock datasets')
+          if len(valid)<100:
+              raise SystemExit('Need at least 100 historical stock datasets')
           PY
           echo 'ready=true' >> "$GITHUB_OUTPUT"
+
       - name: Download 5-minute breakout data
-        run: |
-          pip install openchart
-          python download_nse_5m_openchart.py
+        if: steps.data.outputs.ready == 'true'
+        run: python download_nse_5m_openchart.py
+
+      # Fast production-oriented checks only.
+      # Heavy research experiments are intentionally NOT part of this workflow.
       - name: Run intraday exact-breakout backtest
         if: steps.data.outputs.ready == 'true'
         run: python intraday_breakout_backtest.py --data-dir data --intraday-dir data/intraday5m --market NIFTY50.csv --output results_intraday
+
       - name: Run daily SEPA/VCP backtest
         if: steps.data.outputs.ready == 'true'
         run: python daily_sepa_backtest.py --data-dir data --market NIFTY50.csv --output results
-      - name: Run winner/loser classification
-        if: steps.data.outputs.ready == 'true'
-        run: python scripts/classify_stock_winners_losers.py
-      - name: Run leakage-safe winner-loser feature study
-        if: steps.data.outputs.ready == 'true'
-        run: python scripts/winner_loser_feature_study.py
-      - name: Run entry-quality experiment with 1.5R delayed 50-DMA exit
-        if: steps.data.outputs.ready == 'true'
-        run: python entry_quality_1p5r_experiment.py
-      - name: Run consolidated regime rescue experiment
-        if: steps.data.outputs.ready == 'true'
-        run: python regime_rescue_experiment.py
-      - name: Upload technical backtest results
+
+      - name: Upload production backtest results
         if: always() && steps.data.outputs.ready == 'true'
         uses: actions/upload-artifact@v6
         with:
-          name: daily-sepa-technical-results
+          name: production-backtest-results
           path: |
             results/
-            metadata/
-            metadata_sources/
+            results_intraday/
           if-no-files-found: error
