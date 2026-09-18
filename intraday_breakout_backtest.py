@@ -11,8 +11,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-START = pd.Timestamp("2025-04-01")
-END = pd.Timestamp("2026-03-31")
+START = pd.Timestamp("2026-07-10")
+END = pd.Timestamp("2026-09-08")
 INITIAL = 1_000_000.0
 RISK_PCT = 0.005
 MAX_POSITIONS = 10
