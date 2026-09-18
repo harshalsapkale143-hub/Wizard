@@ -65,7 +65,7 @@ def run(start,end,breadth_thr,nifty50,fail_days,stall_days,vol_mult):
                 proceeds=p["qty"]*exit_px; fee=(p["qty"]*p["entry"]+proceeds)*COST_BPS/10000; pnl=proceeds-p["cost"]-fee; cash+=proceeds-fee
                 trades.append((p["date"],dt,sym,p["entry"],exit_px,p["qty"],pnl,p["age"],p["peak_r"])); del pos[sym]
         ok=bool(n200.loc[dt]) and (breadth_thr is None or bool(breadth.loc[dt]>=breadth_thr)) and (not nifty50 or bool(n50.loc[dt]))
-        if not ok: curve.append((dt,cash+sum(x["qty"]*float(rb.DATA_CACHE[k].loc[dt,"close"]) for k,x in pos.items() if dt in rb.DATA_CACHE[k].index)); continue
+        if not ok: curve.append((dt,cash+sum(x["qty"]*float(rb.DATA_CACHE[k].loc[dt,"close"]) for k,x in pos.items() if dt in rb.DATA_CACHE[k].index))); continue
         for sdt,sym,e,stop in sigs:
             if sdt!=dt or sym in pos or len(pos)>=MAX_POSITIONS: continue
             risk=e-stop; equity=cash+sum(x["qty"]*float(rb.DATA_CACHE[k].loc[dt,"close"]) for k,x in pos.items() if dt in rb.DATA_CACHE[k].index); qty=min(int(equity*RISK_PCT/risk),int(cash/(e*1.001))) if risk>0 else 0
