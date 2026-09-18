@@ -13,6 +13,15 @@ nse = NSEData()
 
 for symbol in symbols:
     clean = symbol.replace("-EQ", "").replace("/", "_").upper()
+    target = OUT / f"{clean}.csv"
+    if target.exists() and target.stat().st_size > 0:
+        try:
+            cached = pd.read_csv(target, usecols=["timestamp"])
+            if len(cached) > 1000:
+                print("  CACHE HIT", len(cached), "bars")
+                continue
+        except Exception:
+            pass
     print("Downloading", symbol)
     try:
         df = nse.historical(symbol, "EQ", START, END, "5m")
