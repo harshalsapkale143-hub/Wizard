@@ -75,9 +75,45 @@ jobs:
         if: steps.data.outputs.ready == 'true'
         run: python download_nse_5m_openchart.py
 
+      - name: Validate 5-minute market data
+        if: steps.data.outputs.ready == 'true'
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          required={"timestamp","open","high","low","close","volume"}
+          valid=[]
+          for f in Path("data/intraday5m").glob("*.csv"):
+              try:
+                  d=pd.read_csv(f)
+                  if required.issubset(d.columns) and len(d)>1000:
+                      valid.append(f)
+              except Exception:
+                  pass
+          print("Valid 5-minute datasets:",len(valid))
+          if len(valid) < 10:
+              raise SystemExit("Need at least 10 usable 5-minute datasets")
+          PY
+
       - name: Run intraday exact-breakout backtest
         if: steps.data.outputs.ready == 'true'
         run: python intraday_breakout_backtest.py --data-dir data --intraday-dir data/intraday5m --market NIFTY50.csv --output results_intraday
+
+      - name: Validate intraday results
+        if: steps.data.outputs.ready == 'true'
+        shell: bash
+        run: |
+          test -s results_intraday/performance.csv
+          test -s results_intraday/trades.csv
+          python - <<'PY'
+          import pandas as pd
+          p=pd.read_csv("results_intraday/performance.csv")
+          required={"final_capital","total_return_pct","trades","profit_factor"}
+          if not required.issubset(p.columns):
+              raise SystemExit("Intraday performance.csv is missing required fields")
+          print(p.to_string(index=False))
+          PY
 
       - name: Run daily SEPA/VCP backtest
         if: steps.data.outputs.ready == 'true'
