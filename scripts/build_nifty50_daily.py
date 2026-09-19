@@ -22,7 +22,6 @@ OUT = Path("data")
 STALE_AFTER_DAYS = 3
 REFRESH_OVERLAP_DAYS = 5
 
-
 def symbols():
     p=Path('metadata/universe_symbols.csv')
     if p.exists():
@@ -31,9 +30,6 @@ def symbols():
         out=d.symbol.astype(str).str.strip().str.upper().tolist()
         if len(out)>=100:
             return sorted(set(out))
-    # Production fallback: current NIFTY 200 constituents from NSE Indices.
-    # The public index page exposes a stable CSV download even when the
-    # browser-oriented NSE JSON endpoint is unavailable in CI.
     import requests
     url='https://www.niftyindices.com/IndexConstituent/ind_nifty200list.csv'
     try:
@@ -42,8 +38,7 @@ def symbols():
         from io import StringIO
         d=pd.read_csv(StringIO(r.content.decode('utf-8-sig')))
         col=next((c for c in d.columns if str(c).strip().lower() in {'symbol','ticker'}),None)
-        if col is None:
-            raise ValueError(f'NIFTY 200 CSV has no symbol column: {list(d.columns)}')
+        if col is None: raise ValueError(f'NIFTY 200 CSV has no symbol column: {list(d.columns)}')
         out=sorted({str(x).strip().upper() for x in d[col].dropna() if str(x).strip()})
         if len(out)>=100:
             print(f'Using current NIFTY 200 universe from NSE Indices: {len(out)} symbols')
@@ -54,7 +49,6 @@ def symbols():
     except Exception as e:
         print(f'NIFTY 200 CSV fallback failed: {e}')
     return [x.strip().upper() for x in Path("config/nifty50_symbols.csv").read_text().splitlines()[1:] if x.strip()]
-
 
 def download(ticker: str, start: str = START) -> pd.DataFrame:
     for attempt in range(4):
@@ -73,9 +67,7 @@ def download(ticker: str, start: str = START) -> pd.DataFrame:
         time.sleep(min(20,2*(attempt+1)))
     return pd.DataFrame()
 
-
 def refresh(ticker: str, name: str) -> tuple[bool, bool]:
-    """Return (success, network_refresh_performed)."""
     path=OUT/f'{name}.csv'
     if path.exists():
         try:
@@ -85,8 +77,7 @@ def refresh(ticker: str, name: str) -> tuple[bool, bool]:
             research_end=pd.Timestamp(END).normalize()
             if len(old)>=250:
                 age_days=(research_end-old['timestamp'].max().normalize()).days
-                if age_days <= STALE_AFTER_DAYS:
-                    return True, False
+                if age_days <= STALE_AFTER_DAYS: return True, False
                 start=(old['timestamp'].max()-pd.Timedelta(days=REFRESH_OVERLAP_DAYS)).strftime('%Y-%m-%d')
                 fresh=download(ticker,start)
                 if not fresh.empty:
@@ -95,36 +86,31 @@ def refresh(ticker: str, name: str) -> tuple[bool, bool]:
                     merged.to_csv(path,index=False)
                     return True, True
                 return True, True
-        except Exception as e:
-            print(f'{name}: cached file unusable, rebuilding: {e}')
+        except Exception as e: print(f'{name}: cached file unusable, rebuilding: {e}')
     d=download(ticker)
     if d.empty: return False, True
     d.to_csv(path,index=False)
     return True, True
 
-
 def main():
     OUT.mkdir(exist_ok=True)
     syms=symbols()
     jobs=[('^NSEI','NIFTY50')]+[(s+'.NS',s) for s in syms]
-    good=0
-    refreshed=0
-    cached=0
+    good=refreshed=cached=0
     for i,(ticker,name) in enumerate(jobs,1):
         print(f'[{i}/{len(jobs)}] Checking {ticker}')
-        ok, did_refresh=refresh(ticker,name)
+        ok,did_refresh=refresh(ticker,name)
         if ok:
             rows=len(pd.read_csv(OUT/f'{name}.csv'))
             good+=1
             if did_refresh: refreshed+=1
             else: cached+=1
-            state='refreshed' if did_refresh else 'cache-hit'
-            print(f'{state}: {rows:,} rows -> data/{name}.csv')
-        else:
-            print(f'NO DATA: {ticker}')
+            print(f'{"refreshed" if did_refresh else "cache-hit"}: {rows:,} rows -> data/{name}.csv')
+        else: print(f'NO DATA: {ticker}')
         time.sleep(0.05 if not did_refresh else 0.2)
     if good<11 or not (OUT/'NIFTY50.csv').exists(): raise RuntimeError(f'Insufficient market data downloaded: {good} datasets')
     print(f'Completed {good}/{len(jobs)} datasets: {cached} cache hits, {refreshed} network refreshes')
 
-
 if __name__=='__main__': main()
+
+# CI trigger marker
