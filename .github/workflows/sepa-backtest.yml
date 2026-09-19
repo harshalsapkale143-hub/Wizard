@@ -1,6 +1,7 @@
 name: SEPA Backtest
 
 on:
+  push:
   workflow_dispatch:
   schedule:
     - cron: '30 3 * * *'
