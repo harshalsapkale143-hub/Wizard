@@ -2,7 +2,7 @@
 
 The metadata-first workflow supplies metadata/universe_symbols.csv containing
 the union of historical top-500 NSE symbols. The script downloads that
-research universe; it falls back to the current NIFTY-50 list only when the
+research universe; it falls back to the current NIFTY-200 list only when the
 metadata universe is unavailable.
 
 Cached files are reused. A symbol is downloaded again only when its stored
@@ -19,11 +19,6 @@ import yfinance as yf
 START = "2018-01-01"
 END = "2026-09-08"
 OUT = Path("data")
-# Research data is only required through END. Compare cache freshness against
-# that fixed research boundary rather than wall-clock today; otherwise a
-# completed Sep-08 dataset becomes "stale" every day after Sep-11 and causes
-# 700+ unnecessary Yahoo requests even though the research period has not
-# changed.
 STALE_AFTER_DAYS = 3
 REFRESH_OVERLAP_DAYS = 5
 
@@ -36,23 +31,28 @@ def symbols():
         out=d.symbol.astype(str).str.strip().str.upper().tolist()
         if len(out)>=100:
             return sorted(set(out))
-    # Production fallback: current NIFTY 200 constituents from NSE.
+    # Production fallback: current NIFTY 200 constituents from NSE Indices.
+    # The public index page exposes a stable CSV download even when the
+    # browser-oriented NSE JSON endpoint is unavailable in CI.
     import requests
-    s=requests.Session()
-    s.headers.update({'User-Agent':'Mozilla/5.0','Accept':'application/json,text/plain,*/*','Referer':'https://www.nseindia.com/'})
+    url='https://www.niftyindices.com/IndexConstituent/ind_nifty200list.csv'
     try:
-        s.get('https://www.nseindia.com/',timeout=20)
-        r=s.get('https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20200',timeout=30)
+        r=requests.get(url,headers={'User-Agent':'Mozilla/5.0','Accept':'text/csv,*/*'},timeout=30)
         r.raise_for_status()
-        data=r.json().get('data',[])
-        out=sorted({str(x.get('symbol','')).strip().upper() for x in data if x.get('symbol')})
+        from io import StringIO
+        d=pd.read_csv(StringIO(r.content.decode('utf-8-sig')))
+        col=next((c for c in d.columns if str(c).strip().lower() in {'symbol','ticker'}),None)
+        if col is None:
+            raise ValueError(f'NIFTY 200 CSV has no symbol column: {list(d.columns)}')
+        out=sorted({str(x).strip().upper() for x in d[col].dropna() if str(x).strip()})
         if len(out)>=100:
-            print(f'Using current NSE NIFTY 200 universe: {len(out)} symbols')
+            print(f'Using current NIFTY 200 universe from NSE Indices: {len(out)} symbols')
             Path('metadata').mkdir(exist_ok=True)
             pd.DataFrame({'symbol':out}).to_csv('metadata/universe_symbols.csv',index=False)
             return out
+        raise ValueError(f'NIFTY 200 CSV returned only {len(out)} symbols')
     except Exception as e:
-        print(f'NSE NIFTY 200 fallback failed: {e}')
+        print(f'NIFTY 200 CSV fallback failed: {e}')
     return [x.strip().upper() for x in Path("config/nifty50_symbols.csv").read_text().splitlines()[1:] if x.strip()]
 
 
@@ -84,9 +84,6 @@ def refresh(ticker: str, name: str) -> tuple[bool, bool]:
             old=old.dropna(subset=['timestamp']).sort_values('timestamp')
             research_end=pd.Timestamp(END).normalize()
             if len(old)>=250:
-                # Compare with the fixed research boundary, not today's date.
-                # A cache complete through END is a true cache hit and should
-                # never trigger a network refresh merely because days elapsed.
                 age_days=(research_end-old['timestamp'].max().normalize()).days
                 if age_days <= STALE_AFTER_DAYS:
                     return True, False
@@ -117,8 +114,6 @@ def main():
         print(f'[{i}/{len(jobs)}] Checking {ticker}')
         ok, did_refresh=refresh(ticker,name)
         if ok:
-            # refresh() already parsed the file, but retaining this lightweight
-            # row-count check keeps the existing logging/validation behavior.
             rows=len(pd.read_csv(OUT/f'{name}.csv'))
             good+=1
             if did_refresh: refreshed+=1
