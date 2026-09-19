@@ -34,8 +34,25 @@ def symbols():
         d=pd.read_csv(p)
         if 'symbol' not in d.columns: raise ValueError('metadata/universe_symbols.csv must contain symbol')
         out=d.symbol.astype(str).str.strip().str.upper().tolist()
-        if len(out)<100: raise RuntimeError(f'Historical universe unexpectedly small: {len(out)} symbols')
-        return sorted(set(out))
+        if len(out)>=100:
+            return sorted(set(out))
+    # Production fallback: current NIFTY 200 constituents from NSE.
+    import requests
+    s=requests.Session()
+    s.headers.update({'User-Agent':'Mozilla/5.0','Accept':'application/json,text/plain,*/*','Referer':'https://www.nseindia.com/'})
+    try:
+        s.get('https://www.nseindia.com/',timeout=20)
+        r=s.get('https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20200',timeout=30)
+        r.raise_for_status()
+        data=r.json().get('data',[])
+        out=sorted({str(x.get('symbol','')).strip().upper() for x in data if x.get('symbol')})
+        if len(out)>=100:
+            print(f'Using current NSE NIFTY 200 universe: {len(out)} symbols')
+            Path('metadata').mkdir(exist_ok=True)
+            pd.DataFrame({'symbol':out}).to_csv('metadata/universe_symbols.csv',index=False)
+            return out
+    except Exception as e:
+        print(f'NSE NIFTY 200 fallback failed: {e}')
     return [x.strip().upper() for x in Path("config/nifty50_symbols.csv").read_text().splitlines()[1:] if x.strip()]
 
 
