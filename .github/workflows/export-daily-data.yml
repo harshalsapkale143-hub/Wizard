@@ -1,4 +1,4 @@
-name: Export Daily Data
+name: Export NIFTY 200 Daily Data
 
 on:
   push:
@@ -11,24 +11,92 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+
       - name: Install dependencies
-        run: pip install pandas numpy yfinance requests beautifulsoup4 openpyxl xlrd
-      - name: Build daily dataset
-        run: python scripts/build_nifty50_daily.py
-      - name: Validate dataset
+        run: pip install pandas requests
+
+      - name: Download current NIFTY 200 constituent list
         run: |
-          count=$(find data -maxdepth 1 -type f -name '*.csv' | wc -l)
-          echo "CSV datasets: $count"
-          test "$count" -ge 40
-          test -s data/NIFTY50.csv
-      - name: Package data
-        run: tar -czf wizard_daily_data.tar.gz data/
-      - name: Upload data artifact
+          mkdir -p data metadata
+          curl -L --fail --retry 3 -A "Mozilla/5.0" \
+            "https://www.niftyindices.com/IndexConstituent/ind_nifty200list.csv" \
+            -o /tmp/nifty200.csv
+          python - <<'PY'
+          import pandas as pd
+          p='/tmp/nifty200.csv'
+          d=pd.read_csv(p)
+          print(d.head())
+          print(d.columns.tolist())
+          c=next(c for c in d.columns if c.strip().lower() in ('symbol','ticker'))
+          syms=sorted(set(d[c].astype(str).str.strip().str.upper()))
+          print("NIFTY200 symbols:",len(syms))
+          assert len(syms)>=180
+          pd.DataFrame({'symbol':syms}).to_csv('metadata/nifty200_symbols.csv',index=False)
+          PY
+
+      - name: Clone NSE EOD historical dataset
+        run: git clone --depth 1 https://github.com/BennyThadikaran/eod2_data.git /tmp/eod2_data
+
+      - name: Build Wizard-format dataset
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          import re
+          syms=pd.read_csv('metadata/nifty200_symbols.csv').symbol.tolist()
+          src=Path('/tmp/eod2_data/daily')
+          out=Path('data'); out.mkdir(exist_ok=True)
+          done=0
+          for sym in syms:
+              p=src/(sym.lower()+'.csv')
+              if not p.exists():
+                  # try symbol normalization
+                  cand=[x for x in src.glob('*.csv') if x.stem.upper()==sym.upper()]
+                  if not cand:
+                      continue
+                  p=cand[0]
+              d=pd.read_csv(p)
+              cols={c.lower().strip():c for c in d.columns}
+              datecol=next((cols[x] for x in ('date','timestamp') if x in cols),None)
+              if not datecol: continue
+              def col(*names):
+                  for n in names:
+                      if n in cols: return cols[n]
+              oc=[col('open'),col('high'),col('low'),col('close'),col('volume')]
+              if any(x is None for x in oc): continue
+              o=pd.DataFrame({
+                  'timestamp':pd.to_datetime(d[datecol],errors='coerce'),
+                  'open':pd.to_numeric(d[oc[0]],errors='coerce'),
+                  'high':pd.to_numeric(d[oc[1]],errors='coerce'),
+                  'low':pd.to_numeric(d[oc[2]],errors='coerce'),
+                  'close':pd.to_numeric(d[oc[3]],errors='coerce'),
+                  'volume':pd.to_numeric(d[oc[4]],errors='coerce')
+              }).dropna(subset=['timestamp','open','high','low','close']).sort_values('timestamp')
+              o=o[(o.timestamp>='2018-01-01')&(o.timestamp<='2026-09-08')]
+              if len(o)>=250:
+                  o.to_csv(out/f'{sym}.csv',index=False); done+=1
+          print("datasets:",done)
+          assert done>=150
+          PY
+
+      - name: Add market index
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          import yfinance as yf
+          d=yf.download('^NSEI',start='2018-01-01',end='2026-09-09',auto_adjust=False,progress=False)
+          if isinstance(d.columns,pd.MultiIndex): d.columns=d.columns.get_level_values(0)
+          d=d.reset_index()
+          d=d.rename(columns={'Date':'timestamp','Open':'open','High':'high','Low':'low','Close':'close','Volume':'volume'})
+          d[['timestamp','open','high','low','close','volume']].to_csv('data/NIFTY50.csv',index=False)
+          PY
+
+      - name: Package
+        run: tar -czf wizard_nifty200_daily_data.tar.gz data/ metadata/nifty200_symbols.csv
+
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: wizard-daily-data
-          path: wizard_daily_data.tar.gz
+          name: wizard-nifty200-daily-data
+          path: wizard_nifty200_daily_data.tar.gz
           retention-days: 7
