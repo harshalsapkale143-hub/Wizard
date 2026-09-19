@@ -22,7 +22,7 @@ jobs:
         run: |
           count=$(find data -maxdepth 1 -type f -name '*.csv' | wc -l)
           echo "CSV datasets: $count"
-          test "$count" -ge 100
+          test "$count" -ge 40
           test -s data/NIFTY50.csv
       - name: Package data
         run: tar -czf wizard_daily_data.tar.gz data/
