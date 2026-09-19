@@ -1,0 +1,34 @@
+name: Export Daily Data
+
+on:
+  push:
+    branches: ["export-daily-data"]
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install pandas numpy yfinance requests beautifulsoup4 openpyxl xlrd
+      - name: Build daily dataset
+        run: python scripts/build_nifty50_daily.py
+      - name: Validate dataset
+        run: |
+          count=$(find data -maxdepth 1 -type f -name '*.csv' | wc -l)
+          echo "CSV datasets: $count"
+          test "$count" -ge 100
+          test -s data/NIFTY50.csv
+      - name: Package data
+        run: tar -czf wizard_daily_data.tar.gz data/
+      - name: Upload data artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wizard-daily-data
+          path: wizard_daily_data.tar.gz
+          retention-days: 7
