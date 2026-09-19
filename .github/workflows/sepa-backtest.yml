@@ -1,12 +1,11 @@
-name: SEPA Backtest
+name: Short-Term Backtest
 
 on:
+  push:
   workflow_dispatch:
-  schedule:
-    - cron: '30 3 * * *'
 
 concurrency:
-  group: sepa-backtest
+  group: short-term-backtest
   cancel-in-progress: true
 
 jobs:
@@ -14,109 +13,37 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Python
-        uses: actions/setup-python@v6
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy yfinance requests beautifulsoup4 openpyxl xlrd openchart
-
-
+          pip install pandas numpy yfinance requests
       - name: Restore daily market-data cache
         uses: actions/cache@v4
         with:
           path: data
           key: sepa-daily-data-OS-2026-09-08-v1-${{ runner.os }}
-
-      - name: Download and build historical research universe
-        run: /usr/bin/time -f 'MARKET_DATA_SECONDS=%e' python scripts/build_nifty50_daily.py
-
-      - name: Validate daily market data
-        id: data
-        shell: bash
+      - name: Build daily market data
+        run: python scripts/build_nifty50_daily.py
+      - name: Validate data
         run: |
           test -s data/NIFTY50.csv
           python - <<'PY'
           from pathlib import Path
           import pandas as pd
-          required={'timestamp','open','high','low','close','volume'}
-          valid=[]
-          for f in Path('data').glob('*.csv'):
-              d=pd.read_csv(f)
-              if required.issubset(d.columns) and len(d)>=250:
-                  valid.append(f)
-          print('Valid datasets:',len(valid))
-          if len(valid)<100:
-              raise SystemExit('Need at least 100 historical stock datasets')
+          req={'timestamp','open','high','low','close','volume'}
+          n=sum(1 for f in Path('data').glob('*.csv') if req.issubset(pd.read_csv(f,nrows=1).columns) and len(pd.read_csv(f))>=250)
+          print("Valid datasets:",n)
+          if n<100: raise SystemExit("Need at least 100 datasets")
           PY
-          echo 'ready=true' >> "$GITHUB_OUTPUT"
-
-      - name: Restore 5-minute market-data cache
-        uses: actions/cache@v4
-        with:
-          path: data/intraday5m
-          key: sepa-intraday5m-2026-07-10-to-2026-09-08-v2-${{ runner.os }}
-
-      - name: Download 5-minute breakout data
-        if: steps.data.outputs.ready == 'true'
-        run: python download_nse_5m_openchart.py
-
-      - name: Validate 5-minute market data
-        if: steps.data.outputs.ready == 'true'
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import pandas as pd
-          required={"timestamp","open","high","low","close","volume"}
-          valid=[]
-          for f in Path("data/intraday5m").glob("*.csv"):
-              try:
-                  d=pd.read_csv(f)
-                  if required.issubset(d.columns) and len(d)>1000:
-                      valid.append(f)
-              except Exception:
-                  pass
-          print("Valid 5-minute datasets:",len(valid))
-          if len(valid) < 10:
-              raise SystemExit("Need at least 10 usable 5-minute datasets")
-          PY
-
-      - name: Run intraday exact-breakout backtest
-        if: steps.data.outputs.ready == 'true'
-        run: python intraday_breakout_backtest.py --data-dir data --intraday-dir data/intraday5m --market NIFTY50.csv --output results_intraday
-
-      - name: Validate intraday results
-        if: steps.data.outputs.ready == 'true'
-        shell: bash
-        run: |
-          test -s results_intraday/performance.csv
-          test -s results_intraday/trades.csv
-          python - <<'PY'
-          import pandas as pd
-          p=pd.read_csv("results_intraday/performance.csv")
-          required={"final_capital","total_return_pct","trades","profit_factor"}
-          if not required.issubset(p.columns):
-              raise SystemExit("Intraday performance.csv is missing required fields")
-          print(p.to_string(index=False))
-          PY
-
-      - name: Run daily SEPA/VCP backtest
-        if: steps.data.outputs.ready == 'true'
-        run: python daily_sepa_backtest.py --data-dir data --market NIFTY50.csv --output results
-
-      - name: Upload production backtest results
-        if: always() && steps.data.outputs.ready == 'true'
+      - name: Run 2-15 and 2-30 day short-term backtest
+        run: python short_term_backtest.py
+      - name: Upload short-term results
         uses: actions/upload-artifact@v6
         with:
-          name: production-backtest-results
-          path: |
-            results/
-            results_intraday/
+          name: short-term-backtest-results
+          path: results_short_term/
           if-no-files-found: error
