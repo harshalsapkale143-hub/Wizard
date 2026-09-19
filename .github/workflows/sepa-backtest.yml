@@ -27,14 +27,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas numpy yfinance requests beautifulsoup4 openpyxl xlrd openchart
 
-      - name: Download NSE metadata sources
-        run: python scripts/download_nse_metadata_sources.py
-
-      - name: Build point-in-time metadata
-        env:
-          METADATA_SOURCE_DIR: metadata_sources
-          LISTING_SOURCE_FILE: metadata_sources/listing_dates.csv
-        run: python scripts/build_historical_metadata.py
 
       - name: Restore daily market-data cache
         uses: actions/cache@v4
