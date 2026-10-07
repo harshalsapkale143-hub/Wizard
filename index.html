@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wizard — SEPA Research Platform</title><link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app-shell">
+<aside class="sidebar">
+<div class="brand"><div class="brand-mark">↗</div><div><strong>Wizard</strong><span>Systematic Equity Research</span></div></div>
+<nav id="nav">
+<button class="nav-item active" data-view="dashboard">⌂ <span>Dashboard</span></button>
+<button class="nav-item" data-view="scanner">⌁ <span>SEPA Scanner</span></button>
+<button class="nav-item" data-view="backtest">◈ <span>Backtest</span></button>
+<button class="nav-item" data-view="fundamentals">▦ <span>Fundamentals</span></button>
+<button class="nav-item" data-view="trades">≡ <span>Trade Log</span></button>
+<button class="nav-item" data-view="compare">⇄ <span>Compare</span></button>
+<button class="nav-item" data-view="reports">◫ <span>Reports</span></button>
+</nav>
+<div class="sidebar-foot"><i></i> Research engine ready</div>
+</aside>
+<main class="main">
+<header class="topbar"><div><div class="eyebrow">WIZARD / RESEARCH</div><h1 id="page-title">Backtest Dashboard</h1></div><div class="top-actions"><span class="data-status"><i></i> Data layer connected</span><button class="ghost" id="refresh">↻ Refresh</button><button class="primary" id="run">Run Backtest</button></div></header>
+
+<section id="dashboard" class="view active">
+<div class="toolbar">
+<label>Strategy<select><option>SEPA Only</option><option>SEPA + Fundamentals</option></select></label>
+<label>Period<select><option>2021 — 2026</option><option>2023 — 2026</option><option>2025 — 2026</option></select></label>
+<label>Holding<select><option>15 days</option><option>30 days</option></select></label>
+<div class="toolbar-note">₹10L initial · 0.5% risk · 10 bps costs · max 10 positions</div>
+</div>
+<div class="kpis">
+<article><span>Total Return</span><b>+31.49%</b><em>compounded</em></article><article><span>Ending Equity</span><b>₹13.15L</b><em>from ₹10.00L</em></article><article><span>Max Drawdown</span><b class="negative">−11.79%</b><em>peak to trough</em></article><article><span>Profit Factor</span><b>1.56</b><em>gross profit / loss</em></article><article><span>Trades</span><b>210</b><em>completed</em></article><article><span>Win Rate</span><b>54.3%</b><em>closed trades</em></article>
+</div>
+<div class="grid two">
+<article class="card chart-card"><div class="card-head"><div><h2>Equity Curve</h2><span>Strategy vs NIFTY 50 buy & hold</span></div><div class="legend"><i></i> Wizard <i class="muted"></i> NIFTY</div></div><div class="chart-wrap"><svg id="equity-chart" viewBox="0 0 900 300" preserveAspectRatio="none"></svg></div></article>
+<article class="card"><div class="card-head"><div><h2>SEPA Pipeline</h2><span>Latest scan snapshot</span></div><span class="pill">LIVE</span></div><div class="pipeline"><div><b>2,041</b><span>Universe</span></div><div><b>486</b><span>Trend</span></div><div><b>117</b><span>Setup</span></div><div><b>18</b><span>Breakout</span></div><div class="highlight"><b>7</b><span>Qualified</span></div></div><div class="mini-note">Signals use information available at the prior close.</div></article>
+</div>
+<div class="grid lower"><article class="card"><div class="card-head"><div><h2>Drawdown</h2><span>Underwater equity</span></div></div><div class="chart-wrap short"><svg id="dd-chart" viewBox="0 0 900 220" preserveAspectRatio="none"></svg></div></article><article class="card"><div class="card-head"><div><h2>Monthly Returns</h2><span>2021–2026</span></div></div><div id="heatmap" class="heatmap"></div></article></div>
+<article class="card"><div class="card-head"><div><h2>Latest SEPA Candidates</h2><span>Sorted by relative strength and breakout quality</span></div><button class="link-btn" data-view="scanner">View scanner →</button></div><div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Price</th><th>RS Rank</th><th>Volume</th><th>Trend</th><th>Setup</th><th>Breakout</th><th>Score</th></tr></thead><tbody id="candidate-rows"></tbody></table></div></article>
+</section>
+
+<section id="scanner" class="view"><div class="section-head"><div><div class="eyebrow">SEPA / V3</div><h2>Scanner</h2><p>Point-in-time technical selection before fundamental filtering.</p></div><button class="primary" id="scan">Run latest scan</button></div><div class="filter-row"><input placeholder="Search symbol…" id="search"><select><option>All stages</option><option>Breakout</option><option>Setup</option><option>Trend</option></select><select><option>RS rank ≥ 70</option><option>RS rank ≥ 80</option><option>RS rank ≥ 90</option></select></div><article class="card"><div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Close</th><th>RS Rank</th><th>vs 60D High</th><th>Vol / Avg</th><th>Market Gate</th><th>Stage</th><th>Score</th></tr></thead><tbody id="scanner-rows"></tbody></table></div></article></section>
+
+<section id="backtest" class="view"><div class="section-head"><div><div class="eyebrow">RESEARCH ENGINE</div><h2>Backtest</h2><p>Configure the same rules used by the Wizard research scripts.</p></div></div><div class="config-grid"><article class="card config"><h3>Capital & Risk</h3><label>Initial capital<input value="1000000"></label><label>Risk per trade<input value="0.5%"></label><label>Max positions<input value="10"></label><label>Transaction costs<input value="10 bps"></label></article><article class="card config"><h3>Entry</h3><label>Holding period<select><option>15 days</option><option>30 days</option></select></label><label>Breakout volume<select><option>≥ 1.5× 20D avg</option></select></label><label>RS threshold<select><option>≥ 70th percentile</option></select></label><label>Market gate<select><option>NIFTY 200DMA + breadth</option></select></label></article><article class="card config"><h3>Exit</h3><label>Initial stop<select><option>10D low / 1.5 ATR</option></select></label><label>Breakeven<select><option>+1R</option></select></label><label>Lock profit<select><option>+1.5R → +0.5R</option></select></label><label>Trail<select><option>2 ATR after +2R</option></select></label></article></div><div class="run-panel card"><div><b>Ready to run</b><span>Results will be produced from the configured data universe.</span></div><button class="primary" id="run2">Run Backtest</button></div></section>
+
+<section id="fundamentals" class="view"><div class="section-head"><div><div class="eyebrow">FUNDAMENTALS</div><h2>Fundamental Filter</h2><p>Point-in-time financial data with publication-date controls.</p></div></div><div class="fund-grid"><article class="card"><h3>Growth</h3><div class="metric-line"><span>EPS growth</span><b>≥ 15%</b></div><div class="metric-line"><span>Revenue growth</span><b>≥ 10%</b></div><div class="metric-line"><span>PAT growth</span><b>≥ 10%</b></div></article><article class="card"><h3>Quality</h3><div class="metric-line"><span>Operating margin</span><b>Stable / rising</b></div><div class="metric-line"><span>Net margin</span><b>Stable / rising</b></div><div class="metric-line"><span>Debt trend</span><b>Controlled</b></div></article><article class="card"><h3>Data integrity</h3><div class="metric-line"><span>Annual history</span><b>10+ years</b></div><div class="metric-line"><span>Quarterly history</span><b>10+ years</b></div><div class="metric-line"><span>Look-ahead guard</span><b class="good">Enabled</b></div></article></div></section>
+
+<section id="trades" class="view"><div class="section-head"><div><div class="eyebrow">EXECUTION LEDGER</div><h2>Trade Log</h2><p>Every trade should be auditable from signal to exit.</p></div></div><article class="card"><div class="table-wrap"><table><thead><tr><th>Entry</th><th>Exit</th><th>Symbol</th><th>Entry</th><th>Exit</th><th>R</th><th>P&L</th><th>Reason</th></tr></thead><tbody id="trade-rows"></tbody></table></div></article></section>
+
+<section id="compare" class="view"><div class="section-head"><div><div class="eyebrow">RESEARCH</div><h2>Strategy Comparison</h2><p>Compare configurations without changing production rules.</p></div></div><div class="compare-grid"><article class="card compare-card"><span>SEPA Only</span><b>15 days</b><strong>+18.5%</strong><small>Reference</small></article><article class="card compare-card active"><span>SEPA Only</span><b>30 days</b><strong>+31.5%</strong><small>Current reference</small></article><article class="card compare-card"><span>SEPA + Fundamentals</span><b>15 days</b><strong>—</strong><small>Awaiting point-in-time data</small></article><article class="card compare-card"><span>SEPA + Fundamentals</span><b>30 days</b><strong>—</strong><small>Awaiting point-in-time data</small></article></div></section>
+
+<section id="reports" class="view"><div class="section-head"><div><div class="eyebrow">OUTPUTS</div><h2>Reports</h2><p>Research artifacts generated from reproducible runs.</p></div></div><div class="report-list"><div class="card report"><b>Backtest summary</b><span>Equity, drawdown, PF, Sharpe, trade distribution</span><button class="link-btn">Open →</button></div><div class="card report"><b>Yearly regime analysis</b><span>Performance split by market regime and calendar year</span><button class="link-btn">Open →</button></div><div class="card report"><b>Exit research</b><span>Structural exit comparison and robustness diagnostics</span><button class="link-btn">Open →</button></div></div></section>
+</main></div><div id="toast" class="toast"></div><script src="app.js"></script>
+</body></html>
