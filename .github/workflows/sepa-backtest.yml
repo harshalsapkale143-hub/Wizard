@@ -1,6 +1,14 @@
 name: SEPA Backtest
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "phase2_*.py"
+      - "robustness_backtest.py"
+      - "scripts/build_dashboard_data.py"
+      - "web/**"
+      - ".github/workflows/sepa-backtest.yml"
   workflow_dispatch:
   schedule:
     - cron: '30 3 * * *'
